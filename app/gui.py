@@ -40,6 +40,8 @@ STATUS_COLOR = {"verified": "#1a7f3c", "pending": "#c27c00", "rejected": "#c6282
 def status_text(r) -> str:
     if r["status"] == "verified" and r.get("source") == "auto":
         return "自动续登"
+    if r["status"] == "verified" and r.get("source") == "import":
+        return "表格导入"
     return STATUS_CN.get(r["status"], r["status"])
 
 
@@ -155,6 +157,11 @@ QMenu::item:selected {{ background: #ffecf1; color: {PINK}; }}
 QMenu::separator {{ height: 1px; background: #eceef0; margin: 4px 8px; }}
 QToolTip {{ background: #ffffff; color: #18191c; border: 1px solid #dcdfe3; padding: 4px 6px; }}
 QStatusBar {{ background: #ffffff; color: #61666d; }}
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; border: none; border-bottom: 2px solid transparent; padding: 8px 16px;
+    margin-right: 4px; color: #61666d; }}
+QTabBar::tab:hover {{ color: {PINK}; }}
+QTabBar::tab:selected {{ color: {PINK}; border-bottom: 2px solid {PINK}; font-weight: bold; }}
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid #c0c4cc; border-radius: 4px; background: #ffffff; }}
 QCheckBox::indicator:hover {{ border-color: {PINK}; }}
@@ -276,7 +283,7 @@ def export_xlsx(path, rows):
     head = ["月份", "本期开始", "等级", "应寄礼物", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址",
             "已发货", "来源"]
     ws.append(head)
-    src = {"auto": "自动续登", "manual": "手动添加", "web": "网页登记"}
+    src = {"auto": "自动续登", "manual": "手动添加", "web": "网页登记", "import": "表格导入"}
     for r in rows:
         ws.append([r["month"], r["start_date"], r["guard_level"] or "", gifts_text(r, " + "), r["bili_name"] or "",
                    str(r["bili_uid"] or ""), who(r), r["receiver"] or "", str(r["phone"] or ""),
@@ -454,7 +461,7 @@ class DashboardPage(QWidget):
         self.c_qq = Card("💬 QQ 机器人（可选）")
         self.b_qq_launch = btn("启动协议端", None, win.launch_napcat)
         self.b_qq_copy = btn("复制连接地址", None, win.copy_ws_url)
-        self.b_qq_set = btn("去设置", None, lambda: win.nav.setCurrentRow(2))
+        self.b_qq_set = btn("去设置", None, lambda: win.nav.setCurrentRow(3))
         for b in (self.b_qq_launch, self.b_qq_copy, self.b_qq_set):
             self.c_qq.btns.addWidget(b)
         self.c_qq.btns.addStretch(1)
@@ -804,6 +811,8 @@ class AddressDialog(QDialog):
                 self, APP_NAME, "手机号看起来不是 11 位大陆手机号，仍然保存吗？") != QMessageBox.Yes:
             return
         db.save_address(self.r["qq"], rec, ph, ad)
+        if self.r.get("snap_address"):             # 已发货 / 表格导入的这一份：同时改正这条记录上的收件信息
+            db.set_snapshot(self.r["id"], rec, ph, ad)
         self.accept()
 
 
@@ -1394,7 +1403,7 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("sidebar")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        for t in ["🏠  运行状态", "🚢  舰长管理", "⚙  设置", "❓  使用帮助"]:
+        for t in ["🏠  运行状态", "🚢  舰长管理", "📊  查询对比", "⚙  设置", "❓  使用帮助"]:
             self.nav.addItem(QListWidgetItem(t))
         sl.addWidget(self.nav, 1)
         self.side_status = label("", "hint", True)
@@ -1405,9 +1414,11 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.dash = DashboardPage(self)
         self.guards = GuardsPage(self)
+        from .gui_history import HistoryPage
+        self.history = HistoryPage(self)
         self.settings = SettingsPage(self)
         self.help = HelpPage(self)
-        for p in (self.dash, self.guards, self.settings, self.help):
+        for p in (self.dash, self.guards, self.history, self.settings, self.help):
             self.stack.addWidget(p)
         h.addWidget(self.stack, 1)
         self.setCentralWidget(central)
@@ -1435,10 +1446,12 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(i)
         if i == 1:
             self.guards.reload_all()
+        elif i == 2:
+            self.history.reload()
 
     def _first_run(self):
         if not self.cfg["streamer"]["room_id"]:
-            self.nav.setCurrentRow(2)
+            self.nav.setCurrentRow(3)
             QMessageBox.information(self, APP_NAME,
                                     "欢迎使用舰长礼物小助手！\n\n第一次使用，请先在「设置」里填写你的直播间号，"
                                     "然后点「保存设置」。\n\n之后把「观众登记网页」的网址或二维码发给舰长们，"
@@ -1459,7 +1472,7 @@ class MainWindow(QMainWindow):
     def start_bot(self):
         if not self.cfg["streamer"]["room_id"]:
             QMessageBox.information(self, APP_NAME, "请先在「设置」里填写直播间号并保存。")
-            self.nav.setCurrentRow(2)
+            self.nav.setCurrentRow(3)
             return
         err = self.bot.start(int(self.cfg["web"]["port"]))
         if err:
@@ -1609,8 +1622,8 @@ class MainWindow(QMainWindow):
 
     # ---------- 需要机器人帮忙的操作 ----------
     def notify_qq(self, qq, text):
-        if db.is_web(qq):
-            self.dash.append_log("[界面] 这位舰长是网页登记的，他再次打开登记页面就能看到结果")
+        if not db.is_qq(qq):
+            self.dash.append_log("[界面] 这位舰长不是通过 QQ 登记的，没法私聊通知（网页登记的再次打开登记页面就能看到结果）")
             return
         if not self.cfg["qq"]["enabled"]:
             self.dash.append_log(f"[界面] 未启用 QQ 机器人，没有通知 QQ {qq}")
@@ -1629,7 +1642,7 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.information(self, APP_NAME, "本月已验证的舰长都填好地址啦 🎉")
             return
-        qq_rows = [r for r in rows if not db.is_web(r["qq"])]
+        qq_rows = [r for r in rows if db.is_qq(r["qq"])]
         if not self.cfg["qq"]["enabled"] or not qq_rows:
             QGuiApplication.clipboard().setText(self.help.notice())
             QMessageBox.information(self, APP_NAME, f"本月还有 {len(rows)} 位舰长没填地址。\n\n"
@@ -1670,7 +1683,7 @@ class MainWindow(QMainWindow):
         if not p or not os.path.exists(p):
             if QMessageBox.question(self, APP_NAME, "还没有设置 QQ 协议端（LLBot / NapCat）的位置。\n\n"
                                                     "现在选择它的启动文件吗？（还没下载的话，请先看「使用帮助」）") == QMessageBox.Yes:
-                self.nav.setCurrentRow(2)
+                self.nav.setCurrentRow(3)
                 self.settings.browse_napcat()
                 if self.settings.napcat.text():
                     self.settings.save()

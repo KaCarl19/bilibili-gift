@@ -9,6 +9,8 @@ TEMP_GROUP: dict[str, int] = {}
 
 
 async def send_private(qq, text: str) -> bool:
+    if not str(qq).isdigit():                  # 网页登记 / 表格导入的人没有 QQ 号，没法私聊
+        return False
     params = {"user_id": int(qq), "message": text}
     if str(qq) in TEMP_GROUP:
         params["group_id"] = TEMP_GROUP[str(qq)]

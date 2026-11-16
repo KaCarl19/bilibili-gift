@@ -85,6 +85,8 @@ def run(guards: dict | None, today: date | None = None, auto_continue: bool = Tr
         # ③ 自动续登
         if not auto_continue or today < end:
             continue                                   # 当前这期（含顺延）还没结束
+        if r.get("source") == "import" and (today - end).days > periods.PERIOD_DAYS:
+            continue                                   # 旧表格里很久以前的记录，中间断没断不知道，不自动续
         k = (today - end).days // periods.PERIOD_DAYS
         cur = end + timedelta(days=periods.PERIOD_DAYS * k)
         paid = date.fromisoformat(r["paid_until"]) if r.get("paid_until") else None

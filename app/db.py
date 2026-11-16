@@ -1,6 +1,10 @@
 """SQLite 数据层。所有数据存放在 data/guard.db
 
-“qq” 字段是登记人的身份标识：通过 QQ 机器人登记的是 QQ 号；通过网页登记的是 "web:B站UID"。
+“qq” 字段是登记人的身份标识：通过 QQ 机器人登记的是 QQ 号；通过网页登记的是 "web:B站UID"；
+从旧表格导入、又没有 UID / QQ 的是 "imp:昵称"。
+
+guards 表里的 snap_receiver / snap_phone / snap_address 是“这一份寄到了哪里”：
+标记发货时自动记下当时的收件信息，从旧表格导入的记录直接存表格里的。没有的就显示他现在的收货地址。
 """
 import secrets
 import string
@@ -92,10 +96,16 @@ def conn():
 
 
 WEB_PREFIX = "web:"
+IMPORT_PREFIX = "imp:"
 
 
 def is_web(owner) -> bool:
     return str(owner).startswith(WEB_PREFIX)
+
+
+def is_qq(owner) -> bool:
+    """身份标识是真正的 QQ 号（能用机器人私聊）"""
+    return str(owner).isdigit()
 
 
 def web_owner(uid) -> str:
@@ -109,7 +119,9 @@ def init():
         # 旧版本数据库补字段：contact 联系方式 / join_code 入群口令 /
         # paid_until 已付费到哪天（一次买多个月时）/ date_source 本期开始日的来源（screenshot/claimed/manual/auto）
         # gifts 这条要寄的礼物（逗号分隔，如“提督,舰长”）/ paused_days 升级时顺延的天数（接上的舰长时间不另算）
-        for col in ("contact", "join_code", "paid_until", "date_source", "gifts", "paused_days"):
+        # snap_* 这一份寄到的收件信息（发货时记下 / 旧表格导入）
+        for col in ("contact", "join_code", "paid_until", "date_source", "gifts", "paused_days",
+                    "snap_receiver", "snap_phone", "snap_address"):
             if col not in cols:
                 c.execute(f"ALTER TABLE guards ADD COLUMN {col} {'INTEGER DEFAULT 0' if col == 'paused_days' else 'TEXT'}")
 
@@ -168,6 +180,21 @@ def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None
         return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
 
 
+def import_guard(owner, month, start_date, *, bili_uid=None, bili_name=None, guard_level=None, contact=None,
+                 shipped=True, receiver=None, phone=None, address=None, note=None):
+    """从旧表格导入一条记录（已验证，来源 import；不生成入群口令）。同一人同一个月已有记录就不导入，返回 None"""
+    with conn() as c:
+        if c.execute("SELECT 1 FROM guards WHERE qq=? AND month=?", (str(owner), month)).fetchone():
+            return None
+        cur = c.execute(
+            """INSERT INTO guards (qq,bili_uid,bili_name,guard_level,month,start_date,status,source,note,contact,
+               date_source,gifts,paused_days,shipped,snap_receiver,snap_phone,snap_address,created_at)
+               VALUES (?,?,?,?,?,?,'verified','import',?,?,'import',?,0,?,?,?,?,?)""",
+            (str(owner), bili_uid, bili_name, guard_level or "舰长", month, start_date, note, contact,
+             ",".join(periods.bundle(guard_level or "舰长")), 1 if shipped else 0, receiver, phone, address, now()))
+        return cur.lastrowid
+
+
 def update_guard(gid, **fields):
     """直接改几个字段（升级合并时用）"""
     if not fields:
@@ -179,6 +206,8 @@ def update_guard(gid, **fields):
 
 def contact_text(r) -> str:
     """“QQ/联系方式”一栏：QQ 登记的显示 QQ 号；网页登记的显示观众留的联系方式（内部标识 web:UID 不给人看）"""
+    if r.get("source") == "import" or str(r["qq"]).startswith(IMPORT_PREFIX):
+        return f"{r['contact']}（表格导入）" if r.get("contact") else "表格导入"
     if is_web(r["qq"]):
         return f"{r['contact']}（网页登记）" if r.get("contact") else "网页登记（未留联系方式）"
     return f"QQ {r['qq']}"
@@ -203,8 +232,25 @@ def set_guard_status(gid, status, note=None):
 
 
 def set_shipped(gid, shipped: bool):
+    """标记发货时记下这一份寄到的收件信息（以后他改地址，也能查到当时寄到了哪里）"""
     with conn() as c:
+        g = c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone()
+        if not g:
+            return
         c.execute("UPDATE guards SET shipped=? WHERE id=?", (1 if shipped else 0, gid))
+        if shipped and not g["shipped"] and not g["snap_address"]:
+            a = c.execute("SELECT * FROM addresses WHERE qq=?", (g["qq"],)).fetchone()
+            if a:
+                c.execute("UPDATE guards SET snap_receiver=?, snap_phone=?, snap_address=? WHERE id=?",
+                          (a["receiver"], a["phone"], a["address"], gid))
+        elif not shipped and g["source"] != "import":
+            c.execute("UPDATE guards SET snap_receiver=NULL, snap_phone=NULL, snap_address=NULL WHERE id=?", (gid,))
+
+
+def set_snapshot(gid, receiver, phone, address):
+    with conn() as c:
+        c.execute("UPDATE guards SET snap_receiver=?, snap_phone=?, snap_address=? WHERE id=?",
+                  (receiver, phone, address, gid))
 
 
 def delete_guard(gid):
@@ -295,7 +341,8 @@ def editable_guard(qq):
 
 
 def list_guards(month=None, status=None):
-    sql = """SELECT g.*, a.receiver, a.phone, a.address, a.updated_at AS addr_updated
+    sql = """SELECT g.*, COALESCE(g.snap_receiver, a.receiver) AS receiver, COALESCE(g.snap_phone, a.phone) AS phone,
+                    COALESCE(g.snap_address, a.address) AS address, a.updated_at AS addr_updated
              FROM guards g LEFT JOIN addresses a ON a.qq = g.qq WHERE 1=1"""
     args = []
     if month:
