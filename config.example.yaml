@@ -22,6 +22,9 @@ web:
   public_url: "http://127.0.0.1:8765"   # 观众打开填写链接用的地址
   admin_password: "请改成一个复杂的密码"   # 网页后台密码
   link_valid_hours: 24           # 填写链接有效小时数
+  contact_label: "QQ / 微信"       # 登记页“联系方式”这一项的标题，例如 "QQ 号" "微信号" "QQ / 微信"
+  contact_required: false         # true = 必填，false = 选填
+  contact_hint: "方便主播有问题时联系你"   # 输入框里的灰色提示文字
 
 rules:
   edit_grace_days: 0            # 每月前几天仍允许上月舰长修改地址，0 = 只允许当月

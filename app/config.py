@@ -24,7 +24,8 @@ DEFAULTS = {
     "bilibili": {"check_api": True},
     "qq": {"enabled": False, "groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
     "web": {"port": 8765, "public_url": "http://127.0.0.1:8765", "admin_password": "",
-            "link_valid_hours": 24},
+            "link_valid_hours": 24,
+            "contact_label": "QQ / 微信", "contact_required": False, "contact_hint": "方便主播有问题时联系你"},
     "rules": {"edit_grace_days": 0, "auto_renew": True},
     "napcat": {"path": ""},
     "gui": {"autostart": True},
@@ -81,6 +82,9 @@ web:
   public_url: {_j(w["public_url"])}   # 观众打开填写链接用的地址
   admin_password: {_j(w["admin_password"])}   # 网页后台密码
   link_valid_hours: {_j(w["link_valid_hours"])}           # 填写链接有效小时数
+  contact_label: {_j(w["contact_label"])}       # 登记页“联系方式”这一项的标题，例如 "QQ 号" "微信号" "QQ / 微信"
+  contact_required: {_j(w["contact_required"])}         # true = 必填，false = 选填
+  contact_hint: {_j(w["contact_hint"])}   # 输入框里的灰色提示文字
 
 rules:
   edit_grace_days: {_j(r["edit_grace_days"])}            # 每月前几天仍允许上月舰长修改地址，0 = 只允许当月

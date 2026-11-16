@@ -45,8 +45,8 @@
       <p class="help">没有截图需要主播人工确认，会慢一些</p>
     </div>
 
-    <label for="contact">QQ / 微信（选填）</label>
-    <input id="contact" name="contact" maxlength="40" placeholder="方便主播有问题时联系你" value="{{ form.contact or '' }}">
+    <label for="contact">{{ contact.label }}（{{ "必填" if contact.required else "选填" }}）</label>
+    <input id="contact" name="contact" maxlength="40" placeholder="{{ contact.hint }}" value="{{ form.contact or '' }}"{% if contact.required %} required minlength="2"{% endif %}>
 
     <button class="full" type="submit" id="go">提交验证</button>
     <p class="help" style="text-align:center">只有目前在舰的舰长才能登记和修改。自动续费、一次买了好几个月的，之后每个月会自动登记，不用重复提交。信息仅用于寄送舰长礼物。</p>

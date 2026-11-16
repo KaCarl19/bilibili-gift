@@ -985,6 +985,18 @@ class SettingsPage(QWidget):
         self.hours.setRange(1, 720)
         self.hours.setSuffix(" 小时")
         f3.addRow("填写链接有效期", self.hours)
+        cr = QHBoxLayout()
+        self.contact_label = QLineEdit()
+        self.contact_label.setPlaceholderText("QQ / 微信")
+        cr.addWidget(self.contact_label, 1)
+        self.contact_required = QCheckBox("必填")
+        cr.addWidget(self.contact_required)
+        f3.addRow("联系方式提问", cr)
+        self.contact_hint = QLineEdit()
+        self.contact_hint.setPlaceholderText("方便主播有问题时联系你")
+        f3.addRow("输入框提示", self.contact_hint)
+        f3.addRow("", label("登记页上让舰长留的联系方式，例如「QQ 号」「微信号」「QQ / 微信」。"
+                            "勾选「必填」后不填就不能提交。", "hint", True))
         lay.addWidget(g3)
 
         # --- 规则 ---
@@ -1034,6 +1046,9 @@ class SettingsPage(QWidget):
         self.public_url.setText(w["public_url"])
         self.password.setText(w["admin_password"])
         self.hours.setValue(int(w["link_valid_hours"]))
+        self.contact_label.setText(w.get("contact_label") or "")
+        self.contact_required.setChecked(bool(w.get("contact_required")))
+        self.contact_hint.setText(w.get("contact_hint") or "")
         self.grace.setValue(int(c["rules"]["edit_grace_days"] or 0))
         self.autostart.setChecked(bool(c["gui"]["autostart"]))
         self.auto_renew.setChecked(bool(c["rules"].get("auto_renew", True)))
@@ -1099,7 +1114,10 @@ class SettingsPage(QWidget):
         c["qq"].update(groups=ints(self.groups.text()), admins=ints(self.admins.text()),
                        kick_unverified_minutes=self.kick.value(), access_token=self.token.text().strip())
         c["web"].update(port=self.port.value(), public_url=url, admin_password=self.password.text(),
-                        link_valid_hours=self.hours.value())
+                        link_valid_hours=self.hours.value(),
+                        contact_label=self.contact_label.text().strip() or "QQ / 微信",
+                        contact_required=self.contact_required.isChecked(),
+                        contact_hint=self.contact_hint.text().strip())
         c["rules"]["edit_grace_days"] = self.grace.value()
         c["napcat"]["path"] = self.napcat.text().strip()
         c["qq"]["enabled"] = self.qq_on.isChecked()

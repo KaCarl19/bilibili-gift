@@ -30,8 +30,16 @@ def admin(cred: HTTPBasicCredentials = Depends(security)):
     return True
 
 
+def _contact_cfg() -> dict:
+    """登记页“联系方式”一项（标题 / 是否必填 / 提示文字），主播可在设置里改"""
+    return {"label": (WEB.get("contact_label") or "").strip() or "QQ / 微信",
+            "required": bool(WEB.get("contact_required")),
+            "hint": (WEB.get("contact_hint") or "").strip()}
+
+
 def _page(request, name, **ctx):
     ctx.setdefault("streamer", STREAMER["name"])
+    ctx.setdefault("contact", _contact_cfg())
     return templates.TemplateResponse(request, name, ctx)
 
 
@@ -101,6 +109,9 @@ async def verify_submit(request: Request, uid: str = Form(""), contact: str = Fo
     uid = re.sub(r"\D", "", uid)
     if not (3 <= len(uid) <= 16):
         return _home(request, form=form, errors=["请填写正确的 B站 UID（一串数字，在 B站 App「我的」→ 点头像 可以看到）"])
+    cc = _contact_cfg()
+    if cc["required"] and len(contact.strip()) < 2:
+        return _home(request, form=form, errors=[f"请填写{cc['label']}"])
     if not _rate_ok(_ip(request)):
         return _home(request, form=form, errors=["提交太频繁了，请 10 分钟后再试。"])
     img = None
