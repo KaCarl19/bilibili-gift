@@ -8,6 +8,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
+from . import periods
 from .config import DATA_DIR, RULES
 
 DB_PATH = DATA_DIR / "guard.db"
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS guards (
     bili_name    TEXT,
     guard_level  TEXT,               -- 舰长 / 提督 / 总督
     month        TEXT NOT NULL,      -- 上舰所属月份 YYYY-MM
-    start_date   TEXT NOT NULL,      -- 上舰日期 YYYY-MM-DD
+    start_date   TEXT NOT NULL,      -- 本舰长月开始日 YYYY-MM-DD
     status       TEXT NOT NULL,      -- verified 已验证 / pending 待审核 / rejected 已拒绝
     source       TEXT,               -- api / screenshot / manual
     screenshot   TEXT,
@@ -105,7 +106,9 @@ def init():
     with conn() as c:
         c.executescript(SCHEMA)
         cols = {r["name"] for r in c.execute("PRAGMA table_info(guards)")}
-        for col in ("contact", "join_code"):          # 旧版本数据库补字段
+        # 旧版本数据库补字段：contact 联系方式 / join_code 入群口令 /
+        # paid_until 已付费到哪天（一次买多个月时）/ date_source 本期开始日的来源（screenshot/claimed/manual/auto）
+        for col in ("contact", "join_code", "paid_until", "date_source"):
             if col not in cols:
                 c.execute(f"ALTER TABLE guards ADD COLUMN {col} TEXT")
 
@@ -127,7 +130,7 @@ def _ensure_join_code(c, gid):
 # ---------------- 舰长记录 ----------------
 def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None,
                  guard_level=None, source=None, screenshot=None, shot_hash=None,
-                 ocr_text=None, note=None, contact=None):
+                 ocr_text=None, note=None, contact=None, paid_until=None, date_source=None):
     """同一个 QQ 同一个月只保留一条记录；已验证的记录不会被降级为待审核。"""
     qq = str(qq)
     with conn() as c:
@@ -139,16 +142,17 @@ def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None
                 """UPDATE guards SET bili_uid=COALESCE(?,bili_uid), bili_name=COALESCE(?,bili_name),
                    guard_level=COALESCE(?,guard_level), start_date=?, status=?, source=?,
                    screenshot=COALESCE(?,screenshot), shot_hash=COALESCE(?,shot_hash),
-                   ocr_text=COALESCE(?,ocr_text), note=?, contact=COALESCE(?,contact) WHERE id=?""",
+                   ocr_text=COALESCE(?,ocr_text), note=?, contact=COALESCE(?,contact),
+                   paid_until=COALESCE(?,paid_until), date_source=COALESCE(?,date_source) WHERE id=?""",
                 (bili_uid, bili_name, guard_level, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, contact, old["id"]))
+                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source, old["id"]))
         else:
             c.execute(
                 """INSERT INTO guards (qq,bili_uid,bili_name,guard_level,month,start_date,status,
-                   source,screenshot,shot_hash,ocr_text,note,contact,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   source,screenshot,shot_hash,ocr_text,note,contact,paid_until,date_source,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (qq, bili_uid, bili_name, guard_level, month, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, contact, now()))
+                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source, now()))
         gid = c.execute("SELECT id FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone()["id"]
         _ensure_join_code(c, gid)
         return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
@@ -183,19 +187,56 @@ def hash_used_by_other(shot_hash, qq):
         return r["qq"] if r else None
 
 
-def uid_used_by_other(bili_uid, qq, month):
-    with conn() as c:
-        r = c.execute("SELECT qq FROM guards WHERE bili_uid=? AND month=? AND qq<>? AND status='verified'",
-                      (str(bili_uid), month, str(qq))).fetchone()
-        return r["qq"] if r else None
+def uid_used_by_other(bili_uid, qq, start=None):
+    """这个 B站账号的当前舰长月，是否已经被别的 QQ / 网页身份验证过"""
+    r = period_record(start or date.today(), uid=bili_uid, statuses=("verified",))
+    return r["qq"] if r and r["qq"] != str(qq) else None
 
 
-def verified_by_uid(bili_uid, month):
-    """本月这个 B站账号已验证的记录（不管是 QQ 还是网页登记的）"""
+def _d(s):
+    return date.fromisoformat(s) if s else None
+
+
+def period_record(start: date, *, owner=None, uid=None, statuses=("verified", "pending")):
+    """找“同一个舰长月”的记录：本期开始日相差 3 天以内，或者覆盖了 start 那天。"""
+    sql, args = "SELECT * FROM guards WHERE status IN (%s)" % ",".join("?" * len(statuses)), list(statuses)
+    if owner is not None:
+        sql += " AND qq=?"; args.append(str(owner))
+    if uid is not None:
+        sql += " AND bili_uid=?"; args.append(str(uid))
     with conn() as c:
-        r = c.execute("SELECT * FROM guards WHERE bili_uid=? AND month=? AND status='verified' ORDER BY id LIMIT 1",
-                      (str(bili_uid), month)).fetchone()
-        return dict(r) if r else None
+        rows = [dict(r) for r in c.execute(sql + " ORDER BY start_date DESC", args)]
+    for r in rows:
+        s = _d(r["start_date"])
+        if abs((s - start).days) <= periods.RENEW_BUFFER_DAYS or s <= start < periods.period_end(s):
+            return r
+    return None
+
+
+def free_month(owner, month: str) -> str:
+    """这个人在 month 已经有记录了（另一个舰长月），就往后顺延到没有记录的月份"""
+    with conn() as c:
+        while c.execute("SELECT 1 FROM guards WHERE qq=? AND month=?", (str(owner), month)).fetchone():
+            month = periods.next_month(month)
+    return month
+
+
+def latest_by_uid():
+    """每个 B站账号最新的一条记录（用于自动续登）"""
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT g.* FROM guards g WHERE g.bili_uid IS NOT NULL AND g.id = (
+                   SELECT id FROM guards x WHERE x.bili_uid = g.bili_uid
+                   ORDER BY x.start_date DESC, x.id DESC LIMIT 1)""")]
+
+
+def recent_auto(days=10):
+    """最近自动续登、还没发货的记录（用于发现误判后撤销）"""
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM guards WHERE source='auto' AND status='verified' AND shipped=0 AND created_at>=?",
+            (since,))]
 
 
 def guards_of_qq(qq):
@@ -205,19 +246,20 @@ def guards_of_qq(qq):
 
 
 def editable_guard(qq):
-    """返回该 QQ 当月（或宽限期内上月）已验证的舰长记录；没有则返回 None —— 不允许填写/修改地址"""
+    """目前在舰（今天落在他已验证的某个舰长月 / 已付费期内），或本月发货表里有他（含宽限期内的上月），
+    就返回这条记录；否则返回 None —— 不允许填写/修改地址"""
     months = [this_month()]
     grace = int(RULES.get("edit_grace_days", 0) or 0)
     today = date.today()
     if grace and today.day <= grace:
         months.append((today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m"))
     with conn() as c:
-        for m in months:
-            r = c.execute("SELECT * FROM guards WHERE qq=? AND month=? AND status='verified'",
-                          (str(qq), m)).fetchone()
-            if r:
-                return dict(r)
-    return None
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM guards WHERE qq=? AND status='verified' ORDER BY start_date DESC", (str(qq),))]
+    for r in rows:
+        if periods.covers(_d(r["start_date"]), today, _d(r.get("paid_until"))):
+            return r
+    return next((r for r in rows if r["month"] in months), None)
 
 
 def list_guards(month=None, status=None):

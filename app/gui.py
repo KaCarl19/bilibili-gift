@@ -29,12 +29,29 @@ from PySide6.QtWidgets import (
 )
 
 from . import config as C
-from . import db
+from . import db, periods
 
 APP_NAME = "舰长礼物小助手"
 PINK = "#fb7299"
 STATUS_CN = {"verified": "已验证", "pending": "待审核", "rejected": "已拒绝"}
 STATUS_COLOR = {"verified": "#1a7f3c", "pending": "#c27c00", "rejected": "#c62828"}
+
+
+def status_text(r) -> str:
+    if r["status"] == "verified" and r.get("source") == "auto":
+        return "自动续登"
+    return STATUS_CN.get(r["status"], r["status"])
+
+
+def detail_tip(r) -> str:
+    """状态单元格的悬停提示：这条记录是怎么来的、付费到哪天"""
+    end = periods.period_end(__import__("datetime").date.fromisoformat(r["start_date"]))
+    lines = [f"本舰长月：{r['start_date']} ～ {end}"]
+    if r.get("paid_until"):
+        lines.append(f"已付费到：{r['paid_until']}（一次买了多个月）")
+    if r.get("note"):
+        lines.append(r["note"])
+    return "\n".join(lines)
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -244,17 +261,18 @@ def export_xlsx(path, rows):
     wb = Workbook()
     ws = wb.active
     ws.title = "发货表"
-    head = ["月份", "上舰日期", "等级", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址", "已发货"]
+    head = ["月份", "本期开始", "等级", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址", "已发货", "来源"]
     ws.append(head)
+    src = {"auto": "自动续登", "manual": "手动添加", "web": "网页登记"}
     for r in rows:
         ws.append([r["month"], r["start_date"], r["guard_level"] or "", r["bili_name"] or "",
                    str(r["bili_uid"] or ""), who(r), r["receiver"] or "", str(r["phone"] or ""),
-                   r["address"] or "", "是" if r["shipped"] else "否"])
+                   r["address"] or "", "是" if r["shipped"] else "否", src.get(r.get("source"), "QQ 验证")])
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="FB7299")
         cell.alignment = Alignment(horizontal="center")
-    for col, w in zip("ABCDEFGHIJ", [9, 12, 7, 18, 13, 13, 10, 14, 48, 8]):
+    for col, w in zip("ABCDEFGHIJK", [9, 12, 7, 18, 13, 13, 10, 14, 48, 8, 10]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
     wb.save(path)
@@ -422,7 +440,7 @@ class DashboardPage(QWidget):
 
         self.c_month = Card(f"📦 本月舰长")
         self.c_month.btns.addWidget(btn("提醒未填地址的舰长", None, win.remind,
-                                        "QQ 机器人会私聊本月已验证、但还没填地址的舰长"))
+                                        "QQ 机器人会私聊本月发货表里、还没填地址的舰长"))
         self.c_month.btns.addStretch(1)
 
         self.c_req = Card("📝 地址修改申请")
@@ -463,7 +481,7 @@ class DashboardPage(QWidget):
 
 
 # ============================== 页面：舰长管理 ==============================
-COLS = ["上舰日期", "状态", "等级", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
+COLS = ["本期开始", "状态", "等级", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
 
 
 class GuardsPage(QWidget):
@@ -534,7 +552,7 @@ class GuardsPage(QWidget):
         for b in (self.b_ok, self.b_no, self.b_ship, self.b_unship, self.b_addr, self.b_shot):
             acts.addWidget(b)
         acts.addStretch(1)
-        acts.addWidget(label("Ctrl / Shift 多选；双击编辑地址；鼠标停在「状态」上看备注", "hint"))
+        acts.addWidget(label("Ctrl / Shift 多选；双击编辑地址；鼠标停在「状态」上看详情", "hint"))
         acts.addWidget(self.b_del)
         lay.addLayout(acts)
         self.rows = []
@@ -570,7 +588,7 @@ class GuardsPage(QWidget):
         t.setSortingEnabled(False)
         t.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            vals = [r["start_date"], STATUS_CN.get(r["status"], r["status"]), r["guard_level"] or "",
+            vals = [r["start_date"], status_text(r), r["guard_level"] or "",
                     r["bili_name"] or "", r["bili_uid"] or "", who(r), r["join_code"] or "", r["receiver"] or "",
                     r["phone"] or "", r["address"] or ("（未填写）" if r["status"] == "verified" else ""),
                     "已发货" if r["shipped"] else ""]
@@ -588,8 +606,8 @@ class GuardsPage(QWidget):
                     it.setForeground(QColor(PINK))
                 if j == 9:
                     it.setToolTip(str(v))
-                if j == 1 and r["note"]:
-                    it.setToolTip(r["note"])
+                if j in (0, 1):
+                    it.setToolTip(detail_tip(r))
                 t.setItem(i, j, it)
         if selected:
             for i, r in enumerate(rows):
@@ -599,7 +617,8 @@ class GuardsPage(QWidget):
         p = sum(r["status"] == "pending" for r in rows)
         na = sum(r["status"] == "verified" and not r["address"] for r in rows)
         sh = sum(bool(r["shipped"]) for r in rows)
-        self.summary.setText(f"共 {len(rows)} 条 · 已验证 {v} · 待审核 {p} · 未填地址 {na} · 已发货 {sh}")
+        au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
+        self.summary.setText(f"共 {len(rows)} 条 · 已验证 {v}（自动续登 {au}）· 待审核 {p} · 未填地址 {na} · 已发货 {sh}")
         self._sel_changed()
 
     def selected_ids(self):
@@ -768,20 +787,26 @@ class AddGuardDialog(QDialog):
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)
         self.qq = QLineEdit()
-        self.qq.setPlaceholderText("必填")
+        self.qq.setPlaceholderText("QQ 号和 B站 UID 至少填一个")
         self.name = QLineEdit()
         self.uid = QLineEdit()
+        self.uid.setPlaceholderText("填了 UID，之后每个月会自动续登")
+        self.months = QSpinBox()
+        self.months.setRange(1, 12)
+        self.months.setSuffix(" 个月")
         self.level = QComboBox()
         self.level.addItems(["舰长", "提督", "总督"])
         self.day = QDateEdit(QDate.currentDate())
         self.day.setCalendarPopup(True)
         self.day.setDisplayFormat("yyyy-MM-dd")
-        lay.addRow(label("适用于识别失败或没进群的观众。添加后对方私聊机器人「改地址」即可填写。", "hint", True))
+        lay.addRow(label("适用于识别失败的观众。只填 UID 的，对方打开登记网页验证后即可填写地址；"
+                         "填了 QQ 的，对方私聊机器人「改地址」即可填写。", "hint", True))
         lay.addRow("QQ 号", self.qq)
         lay.addRow("B站昵称", self.name)
         lay.addRow("B站 UID", self.uid)
         lay.addRow("等级", self.level)
-        lay.addRow("上舰日期", self.day)
+        lay.addRow("开通日期", self.day)
+        lay.addRow("一次购买", self.months)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("添加")
         bb.button(QDialogButtonBox.Cancel).setText("取消")
@@ -791,13 +816,21 @@ class AddGuardDialog(QDialog):
 
     def save(self):
         qq = re.sub(r"\D", "", self.qq.text())
-        if not qq:
-            QMessageBox.warning(self, APP_NAME, "请填写 QQ 号。")
+        uid = re.sub(r"\D", "", self.uid.text())
+        if not qq and not uid:
+            QMessageBox.warning(self, APP_NAME, "QQ 号和 B站 UID 至少填一个。")
             return
         d = self.day.date().toString("yyyy-MM-dd")
-        db.upsert_guard(qq, d[:7], d, "verified", bili_uid=re.sub(r"\D", "", self.uid.text()) or None,
+        n = self.months.value()
+        paid = None
+        if n > 1:
+            from datetime import date, timedelta
+            paid = (date.fromisoformat(d) + timedelta(days=periods.PERIOD_DAYS * n)).isoformat()
+        owner = qq or db.web_owner(uid)
+        db.upsert_guard(owner, db.free_month(owner, d[:7]), d, "verified", bili_uid=uid or None,
                         bili_name=self.name.text().strip() or None, guard_level=self.level.currentText(),
-                        source="manual", note="主播手动添加")
+                        source="manual", paid_until=paid, date_source="manual",
+                        note="主播手动添加" + (f"（一次买 {n} 个月）" if n > 1 else ""))
         self.accept()
 
 
@@ -931,9 +964,13 @@ class SettingsPage(QWidget):
         self.grace = QSpinBox()
         self.grace.setRange(0, 15)
         self.grace.setSuffix(" 天")
-        self.grace.setSpecialValueText("不宽限（只允许本月舰长修改）")
+        self.grace.setSpecialValueText("不宽限")
         f4.addRow("跨月宽限", self.grace)
-        f4.addRow("", label("例如设为 3：每月 1～3 号，上个月的舰长也还能修改地址。", "hint", True))
+        f4.addRow("", label("在舰期间随时可以修改地址。例如设为 3：每月 1～3 号，上个月发货表里的舰长即使已经到期，也还能修改地址。", "hint", True))
+        self.auto_renew = QCheckBox("连续在舰的舰长（自动续费 / 一次买多个月）每个新的舰长月自动登记")
+        f4.addRow("", self.auto_renew)
+        f4.addRow("", label("每个舰长月寄一份礼物。上一期结束后还在 B站舰长名单里，就自动生成下个月的记录、沿用原来的地址，"
+                            "不用舰长重新上传截图。", "hint", True))
         self.autostart = QCheckBox("打开软件时自动启动服务")
         f4.addRow("", self.autostart)
         lay.addWidget(g4)
@@ -970,6 +1007,7 @@ class SettingsPage(QWidget):
         self.hours.setValue(int(w["link_valid_hours"]))
         self.grace.setValue(int(c["rules"]["edit_grace_days"] or 0))
         self.autostart.setChecked(bool(c["gui"]["autostart"]))
+        self.auto_renew.setChecked(bool(c["rules"].get("auto_renew", True)))
 
     def _port_changed(self, v):
         # 观众地址还是本机默认地址时，跟着端口一起改
@@ -1037,6 +1075,7 @@ class SettingsPage(QWidget):
         c["napcat"]["path"] = self.napcat.text().strip()
         c["qq"]["enabled"] = self.qq_on.isChecked()
         c["gui"]["autostart"] = self.autostart.isChecked()
+        c["rules"]["auto_renew"] = self.auto_renew.isChecked()
         return c
 
     def save(self):
@@ -1082,10 +1121,11 @@ class HelpPage(QWidget):
         url = self.win.cfg["web"]["public_url"]
         return ("📢 上舰的宝宝们看这里～舰长礼物登记：\n"
                 f"1. 手机打开 {url} （或扫码）\n"
-                "2. 填 B站 UID，上传本月上舰截图（要能看到主播名和开通时间）\n"
+                "2. 填 B站 UID，上传上舰截图（要能看到主播名和开通 / 到期时间）\n"
                 "3. 验证通过后填写收件人、手机号、地址\n"
-                "4. 本月内要修改：用同一台手机再打开上面的网址就行\n"
-                "⚠️ 只有本月上舰的舰长才能登记和修改哦")
+                "4. 要修改：用同一台手机再打开上面的网址就行\n"
+                "⚠️ 只有目前在舰的舰长才能登记和修改。自动续费、一次买了好几个月的，"
+                "之后每个月会自动登记，不用重复提交")
 
     def copy_notice(self):
         QGuiApplication.clipboard().setText(self.notice())
@@ -1116,7 +1156,9 @@ li{{margin:4px 0}} .box{{background:#fff6e0;padding:10px;border-radius:8px}}</st
 <li>准备寄礼物：「舰长管理」选好月份 →「导出 Excel 发货表」；寄出后选中点「📦 标记已发货」。</li>
 <li>观众私信你新地址：在「舰长管理」双击他那一行，直接帮他改。</li>
 <li>管理舰长群：可以把 QQ 群设成「需要回答问题」，让观众填写登记成功后看到的<b>入群口令</b>，
-  你在「舰长管理」搜索这个口令就能核对是不是本月舰长。</li>
+  你在「舰长管理」搜索这个口令就能核对是不是在舰的舰长。</li>
+<li><b>自动续费 / 一次买多个月：</b>每个舰长月寄一份礼物。上一期结束后他还在 B站舰长名单里，软件会自动生成下个月的记录
+  （状态显示「自动续登」，沿用原来的地址）。如果之后发现他其实没续费，这条记录会自动撤销。</li>
 </ul>
 <h3>让观众用手机打开登记网页</h3>
 <p>默认的 <code>127.0.0.1</code> 只有这台电脑能打开。任选一种，然后把得到的网址填到「设置 → 观众访问地址」：</p>
@@ -1462,7 +1504,8 @@ class MainWindow(QMainWindow):
         na = sum(r["status"] == "verified" and not r["address"] for r in rows)
         sh = sum(r["status"] == "verified" and bool(r["shipped"]) for r in rows)
         self.dash.c_month.title.setText(f"📦 本月舰长（{db.this_month()}）")
-        self.dash.c_month.set(f"已验证 {v} 人", f"待审核 {p} · 未填地址 {na} · 已发货 {sh}")
+        au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
+        self.dash.c_month.set(f"已验证 {v} 人", f"其中自动续登 {au} · 待审核 {p} · 未填地址 {na} · 已发货 {sh}")
         rq = db.count_pending_requests()
         self.dash.c_req.set(f"{rq} 条待确认" if rq else "暂无", "观众换了手机修改地址时，需要你确认后才生效",
                             "#c27c00" if rq else "#9499a0")

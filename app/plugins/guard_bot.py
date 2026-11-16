@@ -1,6 +1,6 @@
 """QQ 机器人
 群里：新人进群提示、截图验证舰长、「绑定 UID」
-私聊（好友 + 陌生人临时会话）：识别改地址/手机号请求 → 多轮提问确认本月上舰 → 发填写链接
+私聊（好友 + 陌生人临时会话）：识别改地址/手机号请求 → 多轮提问确认目前在舰 → 发填写链接
 """
 import asyncio
 import re
@@ -48,7 +48,8 @@ def _group_image(event: Event) -> bool:
 
 
 def _verified_this_month(qq) -> bool:
-    return any(r["month"] == db.this_month() and r["status"] == "verified" for r in db.guards_of_qq(qq))
+    """目前在舰且已验证（包括自动续登的）"""
+    return db.editable_guard(qq) is not None
 
 
 async def _download(event: MessageEvent) -> list[bytes]:
@@ -144,7 +145,7 @@ async def _(event: PrivateMessageEvent):
     if not rows:
         await me.finish("还没有你的上舰记录。需要填写/修改收货地址请发「改地址」。")
     st = {"verified": "已验证", "pending": "待审核", "rejected": "已拒绝"}
-    lines = [f"{r['month']}：{r['guard_level'] or ''} 上舰日期 {r['start_date']}（{st[r['status']]}）" for r in rows]
+    lines = [f"{r['month']}：{r['guard_level'] or ''} 本期从 {r['start_date']} 开始（{st[r['status']]}）" for r in rows]
     a = db.get_address(event.user_id)
     if a:
         lines.append(f"收件人：{a['receiver']}  手机：{a['phone'][:3]}****{a['phone'][-4:]}")

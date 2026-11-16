@@ -106,7 +106,7 @@ async def verify_submit(request: Request, uid: str = Form(""), contact: str = Fo
     img = None
     if not no_shot:
         if shot is None or not shot.filename:
-            return _home(request, form=form, errors=["请上传上舰截图，或者勾选「我没有截图」并填写上舰日期。"])
+            return _home(request, form=form, errors=["请上传上舰截图，或者勾选「我没有截图」并填写开通日期。"])
         img = await shot.read(MAX_UPLOAD + 1)
         if len(img) > MAX_UPLOAD:
             return _home(request, form=form, errors=["截图太大了（超过 8MB），请重新截图后上传。"])
@@ -115,7 +115,7 @@ async def verify_submit(request: Request, uid: str = Form(""), contact: str = Fo
         try:
             claimed_day = date.fromisoformat(claimed)
         except ValueError:
-            return _home(request, form=form, errors=["请填写上舰日期。"])
+            return _home(request, form=form, errors=["请填写开通日期。"])
 
     async with _ocr_slots:
         res = await verify.web_verify(uid, img, claimed_day, contact)
@@ -162,7 +162,7 @@ def _check_token(t):
         return None, None, "链接无效或已过期。请重新打开登记页面验证（或私聊机器人发送「填地址」）。"
     g = db.editable_guard(qq)
     if not g:
-        return qq, None, "系统查询到你不是本月已验证的舰长，暂时不能填写或修改地址。如有疑问请联系主播。"
+        return qq, None, "系统查询到你目前不在舰期内（或还没通过验证），暂时不能填写或修改地址。如有疑问请联系主播。"
     return qq, g, None
 
 
@@ -194,7 +194,7 @@ async def fill_submit(request: Request, t: str = Form(""), receiver: str = Form(
     db.save_address(qq, receiver, phone, address)
     return _page(request, "message.html", title="提交成功", ok=True, home=True, join_code=g.get("join_code"),
                  msg=("地址已保存，礼物会寄到这里，感谢上舰！" if first else "地址已更新！")
-                 + " 本月内需要再修改的话，用这台手机重新打开登记页面即可。")
+                 + " 之后需要修改的话，用这台手机重新打开登记页面即可。")
 
 
 # ======================= 主播后台 =======================
@@ -262,7 +262,7 @@ async def admin_export(month: str = "", _=Depends(admin)):
     rows = db.list_guards(month if month != "all" else None, "verified")
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["月份", "上舰日期", "等级", "B站昵称", "B站UID", "QQ", "收件人", "手机号", "收货地址", "已发货"])
+    w.writerow(["月份", "本期开始", "等级", "B站昵称", "B站UID", "QQ", "收件人", "手机号", "收货地址", "已发货"])
     for r in rows:
         w.writerow([r["month"], r["start_date"], r["guard_level"], r["bili_name"] or "", r["bili_uid"] or "",
                     r["qq"], r["receiver"] or "", r["phone"] or "", r["address"] or "",

@@ -5,21 +5,21 @@
     <h1>🚢 舰长礼物登记</h1>
     <div class="muted">{{ streamer }} 的直播间</div>
     <ol class="steps">
-      <li>填写 B站 UID，上传本月上舰截图</li>
+      <li>填写 B站 UID，上传上舰截图</li>
       <li>系统核对舰长名单，通过后填写收货信息</li>
-      <li>本月内想修改，用这台手机再打开本页即可</li>
+      <li>想修改地址，用这台手机再打开本页即可</li>
     </ol>
   </div>
 
   {% if me %}
   <div class="card">
     {% if me.guard %}
-      <div class="box ok">✅ 你已通过验证{% if me.guard.bili_name %}（{{ me.guard.bili_name }}）{% endif %}，上舰日期 {{ me.guard.start_date }}</div>
+      <div class="box ok">✅ 你已通过验证{% if me.guard.bili_name %}（{{ me.guard.bili_name }}）{% endif %}，本期舰长从 {{ me.guard.start_date }} 开始{% if me.guard.paid_until %}，已付费到 {{ me.guard.paid_until }}{% endif %}</div>
       <a class="btn full" href="/fill?t={{ me.t }}">填写 / 修改收货信息</a>
     {% elif me.rec and me.rec.status == "pending" %}
       <div class="box warn">⏳ 你的登记正在等主播确认（{{ me.rec.created_at[:16] }} 提交）。确认后刷新本页即可填写收货信息。</div>
     {% elif me.rec and me.rec.status == "rejected" %}
-      <div class="box bad">你的登记没有通过主播审核。如有疑问请联系主播；本月续舰后也可以重新登记。</div>
+      <div class="box bad">你的登记没有通过主播审核。如有疑问请联系主播；续舰后也可以重新登记。</div>
     {% endif %}
   </div>
   {% endif %}
@@ -33,14 +33,14 @@
     <p class="help">B站 App →「我的」→ 点头像进入个人空间，名字下面就是 UID</p>
 
     <div id="shotBox" {% if form.no_shot %}style="display:none"{% endif %}>
-      <label for="shot">本月上舰截图</label>
+      <label for="shot">上舰截图</label>
       <input id="shot" name="shot" type="file" accept="image/*">
       <p class="help">B站 App →「我的」→「我的大航海」，截图要能看到 <b>{{ streamer }}</b>、舰长字样和<b>开通 / 到期时间</b></p>
     </div>
 
     <label class="check"><input type="checkbox" name="no_shot" value="1" id="noShot" {% if form.no_shot %}checked{% endif %} onchange="toggle()"> 我没有截图</label>
     <div id="dateBox" {% if not form.no_shot %}style="display:none"{% endif %}>
-      <label for="claimed">本月几号上的舰？</label>
+      <label for="claimed">哪天开通（或最近一次续费）的？</label>
       <input id="claimed" name="claimed" type="date" max="{{ today }}" value="{{ form.claimed or '' }}">
       <p class="help">没有截图需要主播人工确认，会慢一些</p>
     </div>
@@ -49,7 +49,7 @@
     <input id="contact" name="contact" maxlength="40" placeholder="方便主播有问题时联系你" value="{{ form.contact or '' }}">
 
     <button class="full" type="submit" id="go">提交验证</button>
-    <p class="help" style="text-align:center">只有本月（{{ month }}月）上舰的舰长才能登记和修改。信息仅用于寄送舰长礼物。</p>
+    <p class="help" style="text-align:center">只有目前在舰的舰长才能登记和修改。自动续费、一次买了好几个月的，之后每个月会自动登记，不用重复提交。信息仅用于寄送舰长礼物。</p>
   </form>
 </div>
 <script>

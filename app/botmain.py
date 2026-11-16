@@ -23,7 +23,8 @@ def run_bot():
     logger.add(DATA_DIR / "bot.log", rotation="5 MB", retention=3, encoding="utf-8", level="INFO")
     driver = nonebot.get_driver()
 
-    from app import bili, db, web
+    from app import bili, db, renew, web
+    from app.config import RULES
     db.init()
     nonebot.get_app().include_router(web.router)
 
@@ -39,8 +40,14 @@ def run_bot():
         import asyncio
 
         async def loop():
-            while True:                       # 每 5 分钟刷新一次 B站舰长名单
-                await bili.guard_list()
+            while True:                       # 每 5 分钟刷新一次 B站舰长名单，顺便检查自动续登
+                data = await bili.guard_list()
+                if RULES.get("auto_renew", True):
+                    try:
+                        for msg in renew.run(data):
+                            logger.info(msg)
+                    except Exception as e:      # noqa: BLE001
+                        logger.exception(f"自动续登检查出错：{e}")
                 await asyncio.sleep(300)
         asyncio.create_task(loop())
 

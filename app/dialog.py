@@ -1,18 +1,18 @@
-"""私聊对话：识别“改地址/手机号”意图，并通过多轮提问确认对方是否本月上舰。
+"""私聊对话：识别“改地址/手机号”意图，并通过多轮提问确认对方目前是否在舰（自动续费、一次买多个月都算）。
 
 不依赖 QQ，输入 (qq, 文字, 图片列表)，输出要回复的消息，方便单独测试。
 流程：
   识别到改地址意图
-    ├─ 本月已验证 → 直接发填写链接
+    ├─ 目前在舰且已验证 → 直接发填写链接
     └─ 未验证 → ① 问B站UID → 查直播间舰长列表
-                 ② 要本月上舰截图（看开通/到期时间）
+                 ② 要上舰截图（看开通/到期时间，算出当前舰长月）
                     └─ 没有截图 → ③ 问几号上的舰 → 交给主播审核
 """
 import re
 import time
 from datetime import date, timedelta
 
-from . import bili, db, verify
+from . import bili, db, periods, verify
 from .config import STREAMER, WEB
 
 TIMEOUT = 15 * 60              # 15 分钟不回复就结束对话
@@ -80,7 +80,8 @@ def parse_day(text: str) -> date | None:
         if m := re.search(r"(20\d{2})[年/\-.](\d{1,2})[月/\-.](\d{1,2})", t):
             return date(int(m[1]), int(m[2]), int(m[3]))
         if m := re.search(r"(\d{1,2})[月/\-.](\d{1,2})", t):
-            return date(today.year, int(m[1]), int(m[2]))
+            d = date(today.year, int(m[1]), int(m[2]))
+            return d.replace(year=today.year - 1) if d > today else d
         if m := re.search(r"(\d{1,2})[日号]", t):
             return date(today.year, today.month, int(m[1]))
     except ValueError:
@@ -109,7 +110,7 @@ def _send_link(o: Out, qq: str, g: dict):
     hours = int(WEB.get("link_valid_hours", 24))
     link = f"{WEB['public_url'].rstrip('/')}/fill?t={db.new_token(qq, hours)}"
     verb = "修改" if db.get_address(qq) else "填写"
-    o.say(f"✅ 已确认你是本月的{g.get('guard_level') or '舰长'}（上舰日期 {g['start_date']}）。\n"
+    o.say(f"✅ 已确认你目前在舰（{g.get('guard_level') or '舰长'}，本期从 {g['start_date']} 开始）。\n"
           f"请打开下面的链接{verb}收件人、手机号和地址（{hours}小时内有效，请勿转发）：\n{link}")
     if qq in db.DRAFTS:
         o.say("你刚才发的收货信息已经预填在页面里了，核对无误后点「保存」才会生效。")
@@ -120,7 +121,7 @@ def _ask_uid_text():
 
 
 def _ask_shot_text(prefix):
-    return (prefix + "还需要确认你是本月上的舰：请发一张能看到「开通时间」或「到期时间」的截图"
+    return (prefix + "还需要确认你的在舰时间：请发一张能看到「开通时间」或「到期时间」的截图"
             "（B站App → 我的 → 我的大航海，或者开通记录页面）。\n没有截图的话回复「没有」。")
 
 
@@ -163,7 +164,7 @@ async def handle(qq, text: str = "", images: list[bytes] | None = None) -> Out:
             return o
         st = _states[qq] = {"step": "uid", "t": now, "tries": 0}
         o.say(f"收到～你是想填写/修改舰长礼物的收货信息对吧？\n"
-              f"按规则只有本月（{date.today().month}月）上舰的舰长才能填写或修改，"
+              f"按规则只有目前在舰的舰长（自动续费、一次买多个月的都算）才能填写或修改，"
               f"所以我先问你几个问题确认一下，随时发「取消」可以退出。")
         known = next((r for r in db.guards_of_qq(qq) if r.get("bili_uid")), None)
         if known:
@@ -195,7 +196,7 @@ async def _direct_shot(o: Out, qq: str, images):
             if e:
                 _send_link(o, qq, e)
             else:
-                o.say(text + "\n不过这次上舰不是本月的，按规则暂时不能填写/修改地址。")
+                o.say(text + "\n不过系统查询你目前不在舰期内，暂时不能填写/修改地址。")
             return o
         if result == "pending":
             # 截图像是真的但对不上账号：转入问答，问 UID
@@ -223,8 +224,6 @@ async def _step(o: Out, qq: str, st: dict, text: str, images):
         guards = await bili.guard_list()
         if guards is not None and uid not in guards:
             guards = await bili.guard_list(force=True)
-        month = db.this_month()
-
         if guards is None:
             st.update(in_list=None, step="shot")
             o.say(_ask_shot_text("暂时连不上B站，没法自动核对舰长列表。\n② "))
@@ -233,23 +232,22 @@ async def _step(o: Out, qq: str, st: dict, text: str, images):
             st.update(in_list=False, step="shot")
             o.say(f"❗ UID {uid} 目前不在「{STREAMER['name']}」直播间的舰长列表里。\n"
                   "· 刚上舰的话列表可能有几分钟延迟，可以过几分钟再发一次UID；\n"
-                  "· 如果确实本月上过舰，请发一张能看到「开通时间」的上舰截图，我会交给主播人工核对"
+                  "· 如果你确实在舰，请发一张能看到「开通时间」或「到期时间」的上舰截图，我会交给主播人工核对"
                   "（没有截图就回复「没有」）；\n"
                   "· 发错了或不是舰长，发「取消」即可。")
             return o
         g = guards[uid]
-        if db.uid_used_by_other(uid, qq, month):
+        if db.uid_used_by_other(uid, qq):
             _states.pop(qq, None)
-            o.say("这个B站账号本月已经和另一个QQ绑定了。如果你换了QQ号，请联系主播处理。")
-            o.admin.append(f"⚠️ QQ {qq} 想用B站账号 {g['name']}（UID {uid}）改地址，但该账号本月已绑定其他QQ，请留意。")
+            o.say("这个B站账号这个舰长月已经和另一个QQ绑定了。如果你换了QQ号，请联系主播处理。")
+            o.admin.append(f"⚠️ QQ {qq} 想用B站账号 {g['name']}（UID {uid}）改地址，但该账号这个舰长月已绑定其他QQ，请留意。")
             return o
         st.update(in_list=True, name=g["name"], level=g["level"])
 
-        # 本月已经发过带日期的截图、只是没对上账号 → 现在对上了，直接通过
-        rec = next((r for r in db.guards_of_qq(qq)
-                    if r["month"] == month and r["status"] == "pending" and r["screenshot"]), None)
-        if rec:
-            g2 = db.upsert_guard(qq, month, rec["start_date"], "verified", bili_uid=uid,
+        # 已经发过在舰期内的截图、只是没对上账号 → 现在对上了，直接通过
+        rec = db.period_record(date.today(), owner=qq, statuses=("pending",))
+        if rec and rec["screenshot"]:
+            g2 = db.upsert_guard(qq, rec["month"], rec["start_date"], "verified", bili_uid=uid,
                                  bili_name=g["name"], guard_level=g["level"], source="dialog",
                                  note="私聊问答：截图 + UID在舰长列表")
             _states.pop(qq, None)
@@ -269,20 +267,20 @@ async def _step(o: Out, qq: str, st: dict, text: str, images):
                 _send_link(o, qq, g)
             elif result == "pending":
                 _states.pop(qq, None)
-                o.say(f"截图已收到，上舰日期 {g['start_date']}。因为你的UID暂时不在直播间舰长列表里，"
+                o.say(f"截图已收到，本期舰长从 {g['start_date']} 开始。因为你的UID暂时不在直播间舰长列表里，"
                       "已经交给主播人工审核，审核通过后我会通知你，到时再发「改地址」即可。")
-                o.admin.append(f"📝 待审核：QQ {qq}（UID {st.get('uid')}）通过私聊提交了本月上舰截图，"
-                               f"自称 {g['start_date']} 上舰，但UID不在舰长列表。请到后台核对。")
+                o.admin.append(f"📝 待审核：QQ {qq}（UID {st.get('uid')}）通过私聊提交了上舰截图，"
+                               f"本期从 {g['start_date']} 开始，但UID不在舰长列表。请到后台核对。")
             elif result == "old":
                 _states.pop(qq, None)
-                o.say(msg + f"\n按规则只有本月上舰的舰长才能填写/修改地址。如果你本月有续舰，"
-                            "请发续舰后的截图；有疑问请联系主播。")
+                o.say(msg + "\n按规则只有目前在舰的舰长才能填写/修改地址。如果你续了舰，"
+                            "请发能看到新的到期时间的截图；有疑问请联系主播。")
             else:   # retry / nodate
                 return _retry(o, qq, st, msg)
             return o
         if NO_SHOT.search(text):
             st.update(step="date", tries=0)
-            o.say("③ 好的，那请告诉我你是本月几号上的舰？（例如：11月3日）")
+            o.say("③ 好的，那请告诉我你是哪天开通（或最近一次续费）的舰长？（例如：11月3日）")
             return o
         return _retry(o, qq, st, "请发送上舰截图，或者回复「没有」。")
 
@@ -294,14 +292,15 @@ async def _step(o: Out, qq: str, st: dict, text: str, images):
         if d > date.today():
             return _retry(o, qq, st, "日期不能晚于今天哦，请再确认一下。")
         _states.pop(qq, None)
-        if d.strftime("%Y-%m") != db.this_month():
-            o.say(f"你说的是 {d:%Y年%m月%d日}，不是本月。按规则只有本月上舰的舰长才能填写/修改地址，"
-                  "本月续舰后再来找我就行～有疑问请联系主播。")
-            return o
         in_list = st.get("in_list")
-        g = db.upsert_guard(qq, d.strftime("%Y-%m"), d.isoformat(), "pending", bili_uid=st.get("uid"),
-                            bili_name=st.get("name"), guard_level=st.get("level"), source="dialog",
-                            note=f"私聊问答：无截图，自述 {d} 上舰；UID{'在' if in_list else '不在'}舰长列表")
+        start = periods.current_period(d, None, date.today(), bool(in_list))
+        if start is None:
+            o.say(f"你说的是 {d:%Y年%m月%d日}，已经超过一个舰长月，而且 B站舰长名单里没有找到你，可能已经到期。"
+                  "按规则只有目前在舰的舰长才能填写/修改地址，续舰后再来找我就行～有疑问请联系主播。")
+            return o
+        g = verify._save(qq, start, "pending", date_source="claimed", bili_uid=st.get("uid"),
+                         bili_name=st.get("name"), guard_level=st.get("level"), source="dialog",
+                         note=f"私聊问答：无截图，自述 {d} 开通；UID{'在' if in_list else '不在'}舰长列表")
         o.say("好的，已经记录下来并交给主播核对（没有截图需要人工确认），审核通过后我会通知你，"
               "到时再发「改地址」即可。")
         o.admin.append(f"📝 待审核：QQ {qq}（{st.get('name') or ''} UID {st.get('uid')}）自述 {d} 上舰，"

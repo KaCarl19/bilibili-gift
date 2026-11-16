@@ -25,7 +25,7 @@ DEFAULTS = {
     "qq": {"enabled": False, "groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
     "web": {"port": 8765, "public_url": "http://127.0.0.1:8765", "admin_password": "",
             "link_valid_hours": 24},
-    "rules": {"edit_grace_days": 0},
+    "rules": {"edit_grace_days": 0, "auto_renew": True},
     "napcat": {"path": ""},
     "gui": {"autostart": True},
 }
@@ -84,6 +84,7 @@ web:
 
 rules:
   edit_grace_days: {_j(r["edit_grace_days"])}            # 每月前几天仍允许上月舰长修改地址，0 = 只允许当月
+  auto_renew: {_j(r["auto_renew"])}              # 连续在舰（自动续费 / 一次买多个月）的舰长，每个新的舰长月自动登记
 
 napcat:
   path: {_j(n["path"])}                  # QQ 协议端（LLBot / NapCat）启动程序位置（可选，用于一键启动）
