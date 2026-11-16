@@ -43,10 +43,24 @@ def status_text(r) -> str:
     return STATUS_CN.get(r["status"], r["status"])
 
 
+def gifts_text(r, sep="+") -> str:
+    return sep.join(db.gifts_of(r))
+
+
+def gift_counts(rows) -> str:
+    """已验证记录里每种礼物要准备几份"""
+    from collections import Counter
+    c = Counter(g for r in rows if r["status"] == "verified" for g in db.gifts_of(r))
+    return " · ".join(f"{k}礼物 {c[k]} 份" for k in ("总督", "提督", "舰长") if c[k]) or "暂无"
+
+
 def detail_tip(r) -> str:
     """状态单元格的悬停提示：这条记录是怎么来的、付费到哪天"""
-    end = periods.period_end(__import__("datetime").date.fromisoformat(r["start_date"]))
-    lines = [f"本舰长月：{r['start_date']} ～ {end}"]
+    end = periods.period_end(__import__("datetime").date.fromisoformat(r["start_date"]), r.get("paused_days"))
+    lines = [f"等级：{r.get('guard_level') or '舰长'}　应寄：{gifts_text(r, ' + ')}",
+             f"覆盖期：{r['start_date']} ～ {end}"]
+    if r.get("paused_days"):
+        lines.append(f"含顺延 {r['paused_days']} 天（升级时暂停的舰长时间，接在后面，不另算）")
     if r.get("paid_until"):
         lines.append(f"已付费到：{r['paid_until']}（一次买了多个月）")
     if r.get("note"):
@@ -261,20 +275,33 @@ def export_xlsx(path, rows):
     wb = Workbook()
     ws = wb.active
     ws.title = "发货表"
-    head = ["月份", "本期开始", "等级", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址", "已发货", "来源"]
+    head = ["月份", "本期开始", "等级", "应寄礼物", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址",
+            "已发货", "来源"]
     ws.append(head)
     src = {"auto": "自动续登", "manual": "手动添加", "web": "网页登记"}
     for r in rows:
-        ws.append([r["month"], r["start_date"], r["guard_level"] or "", r["bili_name"] or "",
+        ws.append([r["month"], r["start_date"], r["guard_level"] or "", gifts_text(r, " + "), r["bili_name"] or "",
                    str(r["bili_uid"] or ""), who(r), r["receiver"] or "", str(r["phone"] or ""),
                    r["address"] or "", "是" if r["shipped"] else "否", src.get(r.get("source"), "QQ 验证")])
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="FB7299")
         cell.alignment = Alignment(horizontal="center")
-    for col, w in zip("ABCDEFGHIJK", [9, 12, 7, 18, 13, 13, 10, 14, 48, 8, 10]):
+    for col, w in zip("ABCDEFGHIJKL", [9, 12, 7, 20, 18, 13, 13, 10, 14, 48, 8, 10]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
+    # 第二张表：每种礼物要准备几份
+    from collections import Counter
+    cnt = Counter(g for r in rows for g in db.gifts_of(r))
+    ws2 = wb.create_sheet("礼物汇总")
+    ws2.append(["礼物", "份数"])
+    for k in ("总督", "提督", "舰长"):
+        if cnt[k]:
+            ws2.append([f"{k}礼物", cnt[k]])
+    for cell in ws2[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="FB7299")
+    ws2.column_dimensions["A"].width = 14
     wb.save(path)
 
 
@@ -481,7 +508,7 @@ class DashboardPage(QWidget):
 
 
 # ============================== 页面：舰长管理 ==============================
-COLS = ["本期开始", "状态", "等级", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
+COLS = ["本期开始", "状态", "礼物", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
 
 
 class GuardsPage(QWidget):
@@ -588,7 +615,7 @@ class GuardsPage(QWidget):
         t.setSortingEnabled(False)
         t.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            vals = [r["start_date"], status_text(r), r["guard_level"] or "",
+            vals = [r["start_date"], status_text(r), gifts_text(r),
                     r["bili_name"] or "", r["bili_uid"] or "", who(r), r["join_code"] or "", r["receiver"] or "",
                     r["phone"] or "", r["address"] or ("（未填写）" if r["status"] == "verified" else ""),
                     "已发货" if r["shipped"] else ""]
@@ -606,8 +633,10 @@ class GuardsPage(QWidget):
                     it.setForeground(QColor(PINK))
                 if j == 9:
                     it.setToolTip(str(v))
-                if j in (0, 1):
+                if j in (0, 1, 2):
                     it.setToolTip(detail_tip(r))
+                if j == 2 and r.get("guard_level") in ("提督", "总督"):
+                    it.setForeground(QColor("#7b4fd6"))
                 t.setItem(i, j, it)
         if selected:
             for i, r in enumerate(rows):
@@ -618,7 +647,9 @@ class GuardsPage(QWidget):
         na = sum(r["status"] == "verified" and not r["address"] for r in rows)
         sh = sum(bool(r["shipped"]) for r in rows)
         au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
-        self.summary.setText(f"共 {len(rows)} 条 · 已验证 {v}（自动续登 {au}）· 待审核 {p} · 未填地址 {na} · 已发货 {sh}")
+        self.summary.setText(f"共 {len(rows)} 条 · 已验证 {v}（自动续登 {au}）· 待审核 {p} · 未填地址 {na} · 已发货 {sh}"
+                             f"\n需准备：{gift_counts(rows)}")
+        self.summary.setAlignment(Qt.AlignRight)
         self._sel_changed()
 
     def selected_ids(self):
@@ -1505,7 +1536,8 @@ class MainWindow(QMainWindow):
         sh = sum(r["status"] == "verified" and bool(r["shipped"]) for r in rows)
         self.dash.c_month.title.setText(f"📦 本月舰长（{db.this_month()}）")
         au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
-        self.dash.c_month.set(f"已验证 {v} 人", f"其中自动续登 {au} · 待审核 {p} · 未填地址 {na} · 已发货 {sh}")
+        self.dash.c_month.set(f"已验证 {v} 人", f"其中自动续登 {au} · 待审核 {p} · 未填地址 {na} · 已发货 {sh}\n"
+                                             f"需准备：{gift_counts(rows)}")
         rq = db.count_pending_requests()
         self.dash.c_req.set(f"{rq} 条待确认" if rq else "暂无", "观众换了手机修改地址时，需要你确认后才生效",
                             "#c27c00" if rq else "#9499a0")

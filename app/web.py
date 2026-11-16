@@ -175,7 +175,8 @@ async def fill_page(request: Request, t: str = ""):
     draft = db.DRAFTS.get(qq)
     if draft:
         addr.update(draft)
-    resp = _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft))
+    gifts = " + ".join(f"{x}礼物" for x in db.gifts_of(g))
+    resp = _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft), gifts=gifts)
     return _remember(resp, t)
 
 
@@ -189,6 +190,7 @@ async def fill_submit(request: Request, t: str = Form(""), receiver: str = Form(
     errors = _check_addr(receiver, phone, address)
     if errors:
         return _page(request, "fill.html", t=t, guard=g, errors=errors,
+                     gifts=" + ".join(f"{x}礼物" for x in db.gifts_of(g)),
                      addr={"receiver": receiver, "phone": phone, "address": address})
     first = db.get_address(qq) is None
     db.save_address(qq, receiver, phone, address)

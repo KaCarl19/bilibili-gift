@@ -108,9 +108,10 @@ def init():
         cols = {r["name"] for r in c.execute("PRAGMA table_info(guards)")}
         # 旧版本数据库补字段：contact 联系方式 / join_code 入群口令 /
         # paid_until 已付费到哪天（一次买多个月时）/ date_source 本期开始日的来源（screenshot/claimed/manual/auto）
-        for col in ("contact", "join_code", "paid_until", "date_source"):
+        # gifts 这条要寄的礼物（逗号分隔，如“提督,舰长”）/ paused_days 升级时顺延的天数（接上的舰长时间不另算）
+        for col in ("contact", "join_code", "paid_until", "date_source", "gifts", "paused_days"):
             if col not in cols:
-                c.execute(f"ALTER TABLE guards ADD COLUMN {col} TEXT")
+                c.execute(f"ALTER TABLE guards ADD COLUMN {col} {'INTEGER DEFAULT 0' if col == 'paused_days' else 'TEXT'}")
 
 
 _CODE_CHARS = "".join(ch for ch in string.ascii_uppercase + string.digits if ch not in "0O1IL")
@@ -130,11 +131,16 @@ def _ensure_join_code(c, gid):
 # ---------------- 舰长记录 ----------------
 def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None,
                  guard_level=None, source=None, screenshot=None, shot_hash=None,
-                 ocr_text=None, note=None, contact=None, paid_until=None, date_source=None):
-    """同一个 QQ 同一个月只保留一条记录；已验证的记录不会被降级为待审核。"""
+                 ocr_text=None, note=None, contact=None, paid_until=None, date_source=None,
+                 gifts=None, paused_days=None):
+    """同一个 QQ 同一个月只保留一条记录；已验证的记录不会被降级为待审核。
+    gifts 不传时按等级自动决定（提督 = 提督 + 舰长 …）。"""
     qq = str(qq)
     with conn() as c:
         old = c.execute("SELECT * FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone()
+        # 礼物：明确指定的优先；否则新记录、或等级变了时按等级重新算；其余保持不变
+        if gifts is None and guard_level and (old is None or old["guard_level"] != guard_level or not old["gifts"]):
+            gifts = ",".join(periods.bundle(guard_level))
         if old and old["status"] == "verified" and status != "verified":
             return dict(old)
         if old:
@@ -143,19 +149,38 @@ def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None
                    guard_level=COALESCE(?,guard_level), start_date=?, status=?, source=?,
                    screenshot=COALESCE(?,screenshot), shot_hash=COALESCE(?,shot_hash),
                    ocr_text=COALESCE(?,ocr_text), note=?, contact=COALESCE(?,contact),
-                   paid_until=COALESCE(?,paid_until), date_source=COALESCE(?,date_source) WHERE id=?""",
+                   paid_until=COALESCE(?,paid_until), date_source=COALESCE(?,date_source),
+                   gifts=COALESCE(?,gifts), paused_days=COALESCE(?,paused_days) WHERE id=?""",
                 (bili_uid, bili_name, guard_level, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source, old["id"]))
+                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source,
+                 gifts, paused_days, old["id"]))
         else:
             c.execute(
                 """INSERT INTO guards (qq,bili_uid,bili_name,guard_level,month,start_date,status,
-                   source,screenshot,shot_hash,ocr_text,note,contact,paid_until,date_source,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   source,screenshot,shot_hash,ocr_text,note,contact,paid_until,date_source,gifts,paused_days,
+                   created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (qq, bili_uid, bili_name, guard_level, month, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source, now()))
+                 screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source,
+                 gifts or "舰长", int(paused_days or 0), now()))
         gid = c.execute("SELECT id FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone()["id"]
         _ensure_join_code(c, gid)
         return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
+
+
+def update_guard(gid, **fields):
+    """直接改几个字段（升级合并时用）"""
+    if not fields:
+        return
+    cols = ", ".join(f"{k}=?" for k in fields)
+    with conn() as c:
+        c.execute(f"UPDATE guards SET {cols} WHERE id=?", (*fields.values(), gid))
+
+
+def gifts_of(r) -> list[str]:
+    """这条记录要寄的礼物；老数据没存的按等级算"""
+    g = r.get("gifts")
+    return [x for x in g.split(",") if x] if g else periods.bundle(r.get("guard_level"))
 
 
 def get_guard(gid):
@@ -208,7 +233,7 @@ def period_record(start: date, *, owner=None, uid=None, statuses=("verified", "p
         rows = [dict(r) for r in c.execute(sql + " ORDER BY start_date DESC", args)]
     for r in rows:
         s = _d(r["start_date"])
-        if abs((s - start).days) <= periods.RENEW_BUFFER_DAYS or s <= start < periods.period_end(s):
+        if abs((s - start).days) <= periods.RENEW_BUFFER_DAYS or s <= start < periods.period_end(s, r.get("paused_days")):
             return r
     return None
 
@@ -257,7 +282,7 @@ def editable_guard(qq):
         rows = [dict(r) for r in c.execute(
             "SELECT * FROM guards WHERE qq=? AND status='verified' ORDER BY start_date DESC", (str(qq),))]
     for r in rows:
-        if periods.covers(_d(r["start_date"]), today, _d(r.get("paid_until"))):
+        if periods.covers(_d(r["start_date"]), today, _d(r.get("paid_until")), r.get("paused_days")):
             return r
     return next((r for r in rows if r["month"] in months), None)
 

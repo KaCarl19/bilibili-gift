@@ -8,6 +8,7 @@
       你的身份：<span class="lv">{{ guard.guard_level or "舰长" }}</span>
       {% if guard.bili_name %}（{{ guard.bili_name }}）{% endif %}
       <br><span class="muted">本期舰长从 {{ guard.start_date }} 开始{% if guard.paid_until %}，已付费到 {{ guard.paid_until }}{% endif %}</span>
+      {% if gifts %}<br><span class="muted">本期礼物：</span><b style="color:var(--pink)">{{ gifts }}</b>{% endif %}
     </p>
     {% if guard.join_code %}
     <p class="help">入群口令：<b style="color:var(--pink);letter-spacing:2px">{{ guard.join_code }}</b>（加入舰长群时，验证答案填这个）</p>

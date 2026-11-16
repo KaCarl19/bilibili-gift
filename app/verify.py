@@ -134,8 +134,13 @@ def _match_api(info, guards: dict):
 
 
 def _save(owner, start: date, status, *, paid_until=None, date_source="screenshot", **kw):
-    """登记一个舰长月。同一个舰长月已经有记录就更新那条；否则记到本月发货表（本月已有别的舰长月就顺延）"""
+    """登记一个舰长月。同一个舰长月已经有记录就更新那条；否则记到本月发货表（本月已有别的舰长月就顺延）。
+    已验证的舰长这次是更高等级（舰长 → 提督）：按升级规则合并。"""
     same = db.period_record(start, owner=owner)
+    if (same and same["status"] == "verified" and status == "verified"
+            and periods.is_higher(kw.get("guard_level"), same.get("guard_level"))):
+        from . import renew
+        return renew.upgrade(same, kw["guard_level"], start)
     month = same["month"] if same else db.free_month(owner, db.this_month())
     return db.upsert_guard(owner, month, start.isoformat(), status, paid_until=paid_until and paid_until.isoformat(),
                            date_source=date_source, **kw)
@@ -162,7 +167,7 @@ async def verify_screenshot(qq, img: bytes) -> tuple[str, str, dict | None]:
     start, paid = res["start"], res["paid_until"]
 
     same = db.period_record(start, owner=qq, statuses=("verified",))
-    if same:
+    if same and not (matched and periods.is_higher(matched["level"], same.get("guard_level"))):
         _drop(name)
         return "verified", f"你这个舰长月已经验证过了（{period_text(start, paid)}）。", same
     common = dict(screenshot=name, shot_hash=h, ocr_text=info["text"][:2000], paid_until=paid)
@@ -285,6 +290,9 @@ async def web_verify(uid: str, img: bytes | None, claimed: date | None, contact:
         how, src = f"无截图，自述 {claimed} 开通", "claimed"
 
     existing = db.period_record(start, uid=uid, statuses=("verified",))
+    if existing and in_list and periods.is_higher(level, existing.get("guard_level")):
+        from . import renew
+        existing = renew.upgrade(existing, level, start)          # 舰长升级提督：合并成一份
     if (existing and existing["qq"] == owner and existing.get("source") == "manual"
             and not db.get_address(owner)):
         return {"result": "verified", "guard": existing, "msg": "验证通过！"}   # 主播手动添加了 UID、还没填过地址

@@ -40,14 +40,13 @@ def run_bot():
         import asyncio
 
         async def loop():
-            while True:                       # 每 5 分钟刷新一次 B站舰长名单，顺便检查自动续登
+            while True:                       # 每 5 分钟刷新一次 B站舰长名单，顺便检查升级和自动续登
                 data = await bili.guard_list()
-                if RULES.get("auto_renew", True):
-                    try:
-                        for msg in renew.run(data):
-                            logger.info(msg)
-                    except Exception as e:      # noqa: BLE001
-                        logger.exception(f"自动续登检查出错：{e}")
+                try:
+                    for msg in renew.run(data, auto_continue=bool(RULES.get("auto_renew", True))):
+                        logger.info(msg)
+                except Exception as e:          # noqa: BLE001
+                    logger.exception(f"自动续登检查出错：{e}")
                 await asyncio.sleep(300)
         asyncio.create_task(loop())
 
