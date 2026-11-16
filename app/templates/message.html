@@ -5,6 +5,12 @@
     <div style="font-size:42px">{{ "✅" if ok else "⚠️" }}</div>
     <h1>{{ title }}</h1>
     <p>{{ msg }}</p>
+    {% if join_code %}
+      <div class="box warn" style="text-align:left">
+        加入舰长群时，入群验证答案请填写：<br><span class="code">{{ join_code }}</span>
+      </div>
+    {% endif %}
+    {% if home %}<a class="btn sec" href="/">返回登记页面</a>{% endif %}
   </div>
 </div>
 {% endblock %}

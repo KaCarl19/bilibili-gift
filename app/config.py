@@ -22,7 +22,7 @@ SHOT_DIR.mkdir(exist_ok=True)
 DEFAULTS = {
     "streamer": {"name": "", "room_id": 0, "keywords": []},
     "bilibili": {"check_api": True},
-    "qq": {"groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
+    "qq": {"enabled": False, "groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
     "web": {"port": 8765, "public_url": "http://127.0.0.1:8765", "admin_password": "",
             "link_valid_hours": 24},
     "rules": {"edit_grace_days": 0},
@@ -70,10 +70,11 @@ bilibili:
   check_api: {_j(b["check_api"])}            # 调用 B站 公开接口核对舰长名单（推荐开启）
 
 qq:
+  enabled: {_j(q["enabled"])}            # 是否启用 QQ 机器人（需要 LLBot / NapCat 等协议端）
   groups: {_j(q["groups"])}              # 舰长群群号
   admins: {_j(q["admins"])}              # 主播/管理员 QQ（接收待审核提醒）
   kick_unverified_minutes: {_j(q["kick_unverified_minutes"])}   # 新人多少分钟内不验证就踢出，0 = 不踢
-  access_token: {_j(q["access_token"])}          # 与 NapCat 里填的 token 一致（可留空）
+  access_token: {_j(q["access_token"])}          # 与协议端里填的 token 一致（可留空）
 
 web:
   port: {_j(w["port"])}                   # 程序使用的端口
@@ -85,10 +86,10 @@ rules:
   edit_grace_days: {_j(r["edit_grace_days"])}            # 每月前几天仍允许上月舰长修改地址，0 = 只允许当月
 
 napcat:
-  path: {_j(n["path"])}                  # NapCat 启动程序位置（可选，用于一键启动）
+  path: {_j(n["path"])}                  # QQ 协议端（LLBot / NapCat）启动程序位置（可选，用于一键启动）
 
 gui:
-  autostart: {_j(c["gui"]["autostart"])}            # 打开软件时自动启动机器人
+  autostart: {_j(c["gui"]["autostart"])}            # 打开软件时自动启动服务（登记网页 + 可选的 QQ 机器人）
 """
 
 

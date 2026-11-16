@@ -104,6 +104,7 @@ QPushButton[kind="danger"]:disabled {{ color: #e8b4b6; border-color: #f3e0e1; }}
 QLineEdit, QComboBox, QSpinBox, QDateEdit, QPlainTextEdit {{ background: #ffffff; border: 1px solid #dcdfe3;
     border-radius: 6px; padding: 5px 8px; selection-background-color: {PINK}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDateEdit:focus, QPlainTextEdit:focus {{ border-color: {PINK}; }}
+QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled {{ background: #f3f4f6; color: #a8abb2; border-color: #e8eaed; }}
 QTableWidget {{ background: #ffffff; border: 1px solid #eceef0; border-radius: 8px; gridline-color: #f1f2f3;
     selection-background-color: #ffe3eb; selection-color: #18191c; alternate-background-color: #fbfbfc; }}
 QHeaderView::section {{ background: #fafafa; border: none; border-bottom: 1px solid #e3e5e7; padding: 7px 6px;
@@ -230,17 +231,24 @@ def check_room(room_id: int) -> dict:
     return {"room_id": d["room_id"], "uid": d["uid"], "name": name, "guards": num}
 
 
+def who(r) -> str:
+    """表格里“QQ/联系方式”一栏：QQ 登记的显示 QQ 号；网页登记的显示观众留的联系方式"""
+    if db.is_web(r["qq"]):
+        return f"{r['contact']}（网页）" if r.get("contact") else "网页登记"
+    return str(r["qq"])
+
+
 def export_xlsx(path, rows):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     wb = Workbook()
     ws = wb.active
     ws.title = "发货表"
-    head = ["月份", "上舰日期", "等级", "B站昵称", "B站UID", "QQ", "收件人", "手机号", "收货地址", "已发货"]
+    head = ["月份", "上舰日期", "等级", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号", "收货地址", "已发货"]
     ws.append(head)
     for r in rows:
         ws.append([r["month"], r["start_date"], r["guard_level"] or "", r["bili_name"] or "",
-                   str(r["bili_uid"] or ""), str(r["qq"]), r["receiver"] or "", str(r["phone"] or ""),
+                   str(r["bili_uid"] or ""), who(r), r["receiver"] or "", str(r["phone"] or ""),
                    r["address"] or "", "是" if r["shipped"] else "否"])
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -286,16 +294,16 @@ class BotController(QObject):
         p.setProcessChannelMode(QProcess.MergedChannels)
         p.readyReadStandardOutput.connect(self._read)
         p.finished.connect(self._finished)
-        p.errorOccurred.connect(lambda e: self.log.emit(f"[界面] 机器人进程出错：{e}"))
+        p.errorOccurred.connect(lambda e: self.log.emit(f"[界面] 服务进程出错：{e}"))
         self.proc = p
-        self.log.emit("[界面] 正在启动机器人……")
+        self.log.emit("[界面] 正在启动服务……")
         p.start()
         self.running_changed.emit(True)
         return None
 
     def stop(self):
         if self.running():
-            self.log.emit("[界面] 正在停止机器人……")
+            self.log.emit("[界面] 正在停止服务……")
             self.proc.kill()
             self.proc.waitForFinished(3000)
 
@@ -308,7 +316,7 @@ class BotController(QObject):
                 self.log.emit(t)
 
     def _finished(self, code, _status):
-        self.log.emit(f"[界面] 机器人已停止（退出码 {code}）")
+        self.log.emit(f"[界面] 服务已停止（退出码 {code}）")
         self.running_changed.emit(False)
 
 
@@ -389,14 +397,23 @@ class DashboardPage(QWidget):
 
         grid = QGridLayout()
         grid.setSpacing(14)
-        self.c_bot = Card("🤖 QQ 机器人")
-        self.b_toggle = btn("启动机器人", "primary", win.toggle_bot)
+        self.c_bot = Card("⚙ 后台服务")
+        self.b_toggle = btn("启动服务", "primary", win.toggle_bot)
         self.c_bot.btns.addWidget(self.b_toggle)
         self.c_bot.btns.addStretch(1)
 
-        self.c_qq = Card("💬 QQ 连接（NapCat）")
-        self.c_qq.btns.addWidget(btn("启动 NapCat", None, win.launch_napcat))
-        self.c_qq.btns.addWidget(btn("复制连接地址", None, win.copy_ws_url))
+        self.c_web = Card("🌐 观众登记网页")
+        self.c_web.btns.addWidget(btn("复制网址", None, win.copy_public_url))
+        self.c_web.btns.addWidget(btn("二维码", None, win.show_qr, "生成二维码图片，可以发群公告、动态、直播间"))
+        self.c_web.btns.addWidget(btn("打开", None, win.open_public_url))
+        self.c_web.btns.addStretch(1)
+
+        self.c_qq = Card("💬 QQ 机器人（可选）")
+        self.b_qq_launch = btn("启动协议端", None, win.launch_napcat)
+        self.b_qq_copy = btn("复制连接地址", None, win.copy_ws_url)
+        self.b_qq_set = btn("去设置", None, lambda: win.nav.setCurrentRow(2))
+        for b in (self.b_qq_launch, self.b_qq_copy, self.b_qq_set):
+            self.c_qq.btns.addWidget(b)
         self.c_qq.btns.addStretch(1)
 
         self.c_bili = Card("📺 B站舰长名单")
@@ -405,12 +422,18 @@ class DashboardPage(QWidget):
 
         self.c_month = Card(f"📦 本月舰长")
         self.c_month.btns.addWidget(btn("提醒未填地址的舰长", None, win.remind,
-                                        "机器人会私聊本月已验证、但还没填地址的舰长"))
+                                        "QQ 机器人会私聊本月已验证、但还没填地址的舰长"))
         self.c_month.btns.addStretch(1)
 
-        for i, c in enumerate([self.c_bot, self.c_qq, self.c_bili, self.c_month]):
+        self.c_req = Card("📝 地址修改申请")
+        self.c_req.btns.addWidget(btn("去处理", None, win.open_requests))
+        self.c_req.btns.addStretch(1)
+
+        for i, c in enumerate([self.c_bot, self.c_web, self.c_qq, self.c_bili, self.c_month, self.c_req]):
             c.setMinimumHeight(150)
-            grid.addWidget(c, i // 2, i % 2)
+            grid.addWidget(c, i // 3, i % 3)
+        for col in range(3):
+            grid.setColumnStretch(col, 1)
         lay.addLayout(grid)
 
         row = QHBoxLayout()
@@ -440,7 +463,7 @@ class DashboardPage(QWidget):
 
 
 # ============================== 页面：舰长管理 ==============================
-COLS = ["上舰日期", "状态", "等级", "B站昵称", "B站UID", "QQ", "收件人", "手机号", "收货地址", "发货", "备注"]
+COLS = ["上舰日期", "状态", "等级", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
 
 
 class GuardsPage(QWidget):
@@ -467,7 +490,7 @@ class GuardsPage(QWidget):
         for k, v in STATUS_CN.items():
             self.status.addItem(v, k)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("🔍 搜索 QQ / 昵称 / UID / 收件人 / 手机号")
+        self.search.setPlaceholderText("🔍 搜索 QQ / 昵称 / UID / 入群口令 / 收件人 / 手机号")
         self.search.setClearButtonEnabled(True)
         self.month.currentIndexChanged.connect(self.load)
         self.status.currentIndexChanged.connect(self.load)
@@ -478,6 +501,8 @@ class GuardsPage(QWidget):
         bar.addWidget(self.search, 1)
         bar.addWidget(btn("刷新", None, self.reload_all))
         bar.addWidget(btn("＋ 手动添加", None, self.add_guard))
+        self.b_req = btn("📝 修改申请", None, win.open_requests, "观众在网页上提交的地址修改申请")
+        bar.addWidget(self.b_req)
         bar.addWidget(btn("导出 Excel 发货表", "primary", self.export))
         lay.addLayout(bar)
 
@@ -490,8 +515,8 @@ class GuardsPage(QWidget):
         self.table.setWordWrap(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(8, QHeaderView.Stretch)
-        hh.setSectionResizeMode(10, QHeaderView.Interactive)
+        hh.setSectionResizeMode(9, QHeaderView.Stretch)
+        self.table.horizontalHeaderItem(6).setToolTip("观众登记成功后看到的口令。加舰长群时让他填这个，你在这里搜索就能核对")
         self.table.doubleClicked.connect(lambda _i: self.edit_address())
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.menu)
@@ -509,7 +534,7 @@ class GuardsPage(QWidget):
         for b in (self.b_ok, self.b_no, self.b_ship, self.b_unship, self.b_addr, self.b_shot):
             acts.addWidget(b)
         acts.addStretch(1)
-        acts.addWidget(label("可按住 Ctrl / Shift 多选；双击一行编辑地址", "hint"))
+        acts.addWidget(label("Ctrl / Shift 多选；双击编辑地址；鼠标停在「状态」上看备注", "hint"))
         acts.addWidget(self.b_del)
         lay.addLayout(acts)
         self.rows = []
@@ -538,30 +563,34 @@ class GuardsPage(QWidget):
         kw = self.search.text().strip().lower()
         if kw:
             rows = [r for r in rows if any(kw in str(r.get(k) or "").lower() for k in
-                                           ("qq", "bili_name", "bili_uid", "receiver", "phone", "address"))]
+                                           ("qq", "contact", "join_code", "bili_name", "bili_uid", "receiver",
+                                            "phone", "address"))]
         self.rows = rows
         t = self.table
         t.setSortingEnabled(False)
         t.setRowCount(len(rows))
         for i, r in enumerate(rows):
             vals = [r["start_date"], STATUS_CN.get(r["status"], r["status"]), r["guard_level"] or "",
-                    r["bili_name"] or "", r["bili_uid"] or "", r["qq"], r["receiver"] or "",
+                    r["bili_name"] or "", r["bili_uid"] or "", who(r), r["join_code"] or "", r["receiver"] or "",
                     r["phone"] or "", r["address"] or ("（未填写）" if r["status"] == "verified" else ""),
-                    "已发货" if r["shipped"] else "", r["note"] or ""]
+                    "已发货" if r["shipped"] else ""]
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
                 it.setData(Qt.UserRole, r["id"])
                 if j == 1:
                     it.setForeground(QColor(STATUS_COLOR.get(r["status"], "#18191c")))
                     f = it.font(); f.setBold(True); it.setFont(f)
-                if j == 8 and not r["address"]:
+                if j == 9 and not r["address"]:
                     it.setForeground(QColor("#c27c00"))
-                if j == 9 and r["shipped"]:
+                if j == 10 and r["shipped"]:
                     it.setForeground(QColor("#1a7f3c"))
-                if j in (8, 10):
+                if j == 6:
+                    it.setForeground(QColor(PINK))
+                if j == 9:
                     it.setToolTip(str(v))
+                if j == 1 and r["note"]:
+                    it.setToolTip(r["note"])
                 t.setItem(i, j, it)
-        t.setColumnWidth(10, 220)
         if selected:
             for i, r in enumerate(rows):
                 if r["id"] in selected:
@@ -840,8 +869,13 @@ class SettingsPage(QWidget):
         lay.addWidget(g1)
 
         # --- QQ ---
-        g2 = QGroupBox("② QQ 机器人")
+        g2 = QGroupBox("② QQ 机器人（可选）")
         f2 = QFormLayout(g2)
+        self.qq_on = QCheckBox("启用 QQ 机器人（群里自动识别上舰截图、私聊改地址、审核结果通知）")
+        f2.addRow("", self.qq_on)
+        f2.addRow("", label("收集地址不需要 QQ 机器人：观众打开「登记网页」就能自助验证和填写。"
+                            "启用需要另外运行 LLBot 等 QQ 协议端（NapCat 已停止维护），"
+                            "这类非官方工具有被 QQ 风控的风险，请务必用小号。", "hint", True))
         self.groups = QLineEdit()
         self.groups.setPlaceholderText("多个群用逗号分隔")
         f2.addRow("舰长群群号", self.groups)
@@ -855,26 +889,28 @@ class SettingsPage(QWidget):
         self.kick.setSpecialValueText("不踢人")
         f2.addRow("新人未验证踢出", self.kick)
         self.token = QLineEdit()
-        self.token.setPlaceholderText("可留空；如果在 NapCat 里设置了 token，这里填一样的")
+        self.token.setPlaceholderText("可留空；如果在协议端（LLBot / NapCat）里设置了 token，这里填一样的")
         f2.addRow("连接令牌 token", self.token)
         nr = QHBoxLayout()
         self.napcat = QLineEdit()
-        self.napcat.setPlaceholderText("可选：选择 NapCat 的启动文件（.bat 或 .exe），之后可一键启动")
+        self.napcat.setPlaceholderText("可选：选择 QQ 协议端（LLBot / NapCat）的启动文件，之后可一键启动")
         nr.addWidget(self.napcat, 1)
-        nr.addWidget(btn("浏览…", None, self.browse_napcat))
-        f2.addRow("NapCat 位置", nr)
+        self.b_browse = btn("浏览…", None, self.browse_napcat)
+        nr.addWidget(self.b_browse)
+        f2.addRow("协议端位置", nr)
+        self.qq_on.toggled.connect(self._qq_toggle)
         lay.addWidget(g2)
 
         # --- 网页 ---
-        g3 = QGroupBox("③ 地址填写网页")
+        g3 = QGroupBox("③ 观众登记网页")
         f3 = QFormLayout(g3)
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)
         f3.addRow("端口", self.port)
         self.public_url = QLineEdit()
         f3.addRow("观众访问地址", self.public_url)
-        f3.addRow("", label("观众在手机上打开填写链接用的地址。只在本机测试用 http://127.0.0.1:端口；"
-                            "要让观众能打开，请填内网穿透或云服务器的地址（见「帮助」）。", "hint", True))
+        f3.addRow("", label("观众用手机打开的登记网址。http://127.0.0.1:端口 只有这台电脑能打开；"
+                            "要让观众能打开，请填内网穿透或云服务器的地址（见「使用帮助」）。", "hint", True))
         pr = QHBoxLayout()
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
@@ -898,7 +934,7 @@ class SettingsPage(QWidget):
         self.grace.setSpecialValueText("不宽限（只允许本月舰长修改）")
         f4.addRow("跨月宽限", self.grace)
         f4.addRow("", label("例如设为 3：每月 1～3 号，上个月的舰长也还能修改地址。", "hint", True))
-        self.autostart = QCheckBox("打开软件时自动启动机器人")
+        self.autostart = QCheckBox("打开软件时自动启动服务")
         f4.addRow("", self.autostart)
         lay.addWidget(g4)
 
@@ -923,6 +959,8 @@ class SettingsPage(QWidget):
         self.kick.setValue(int(q["kick_unverified_minutes"] or 0))
         self.token.setText(q["access_token"] or "")
         self.napcat.setText(c["napcat"]["path"] or "")
+        self.qq_on.setChecked(bool(q.get("enabled")))
+        self._qq_toggle(self.qq_on.isChecked())
         self._last_port = int(w["port"])
         self.port.blockSignals(True)
         self.port.setValue(int(w["port"]))
@@ -939,6 +977,10 @@ class SettingsPage(QWidget):
         if self._last_port and re.fullmatch(rf"http://(127\.0\.0\.1|localhost):{self._last_port}/?", u):
             self.public_url.setText(f"http://127.0.0.1:{v}")
         self._last_port = v
+
+    def _qq_toggle(self, on):
+        for w in (self.groups, self.admins, self.kick, self.token, self.napcat, self.b_browse):
+            w.setEnabled(on)
 
     def browse_napcat(self):
         p, _ = QFileDialog.getOpenFileName(self, "选择 NapCat 启动文件", "", "启动文件 (*.bat *.exe *.cmd *.ps1);;所有文件 (*)")
@@ -993,6 +1035,7 @@ class SettingsPage(QWidget):
                         link_valid_hours=self.hours.value())
         c["rules"]["edit_grace_days"] = self.grace.value()
         c["napcat"]["path"] = self.napcat.text().strip()
+        c["qq"]["enabled"] = self.qq_on.isChecked()
         c["gui"]["autostart"] = self.autostart.isChecked()
         return c
 
@@ -1002,7 +1045,7 @@ class SettingsPage(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, APP_NAME, str(e))
             return
-        if not c["qq"]["groups"]:
+        if c["qq"]["enabled"] and not c["qq"]["groups"]:
             if QMessageBox.question(self, APP_NAME, "还没有填写舰长群群号，机器人将不会处理任何群消息。\n仍然保存吗？") \
                     != QMessageBox.Yes:
                 return
@@ -1011,7 +1054,7 @@ class SettingsPage(QWidget):
         self.win.cfg = c
         self.win.settings_saved()
         if self.win.bot.running():
-            if QMessageBox.question(self, APP_NAME, "设置已保存。需要重启机器人才能生效，现在重启吗？") == QMessageBox.Yes:
+            if QMessageBox.question(self, APP_NAME, "设置已保存。需要重启服务才能生效，现在重启吗？") == QMessageBox.Yes:
                 self.win.restart_bot(old_port)
         else:
             self.win.toast("设置已保存")
@@ -1019,13 +1062,6 @@ class SettingsPage(QWidget):
 
 # ============================== 页面：帮助 ==============================
 class HelpPage(QWidget):
-    NOTICE = ("📢 上舰的宝宝们看这里～\n"
-              "1. 在群里发一张上舰截图（要能看到主播名和开通时间），机器人会自动帮你验证\n"
-              "2. 验证通过后，私聊机器人发「填地址」，打开链接填写收件人、手机号、地址\n"
-              "3. 地址或手机号要改？私聊机器人说「我要改地址」就行\n"
-              "4. 想看自己填的信息？私聊机器人发「我的信息」\n"
-              "⚠️ 只有本月上舰的舰长才能填写和修改地址哦")
-
     def __init__(self, win):
         super().__init__()
         self.win = win
@@ -1036,54 +1072,208 @@ class HelpPage(QWidget):
         top.addWidget(label("使用帮助", "pageTitle"))
         top.addStretch(1)
         top.addWidget(btn("复制群公告", None, self.copy_notice))
-        top.addWidget(btn("复制 NapCat 连接地址", None, win.copy_ws_url))
+        top.addWidget(btn("复制登记网址", None, win.copy_public_url))
         lay.addLayout(top)
         self.text = QTextBrowser()
         self.text.setOpenExternalLinks(True)
         lay.addWidget(self.text, 1)
 
+    def notice(self):
+        url = self.win.cfg["web"]["public_url"]
+        return ("📢 上舰的宝宝们看这里～舰长礼物登记：\n"
+                f"1. 手机打开 {url} （或扫码）\n"
+                "2. 填 B站 UID，上传本月上舰截图（要能看到主播名和开通时间）\n"
+                "3. 验证通过后填写收件人、手机号、地址\n"
+                "4. 本月内要修改：用同一台手机再打开上面的网址就行\n"
+                "⚠️ 只有本月上舰的舰长才能登记和修改哦")
+
     def copy_notice(self):
-        QGuiApplication.clipboard().setText(self.NOTICE)
-        self.win.toast("群公告已复制，可以直接粘贴到 QQ 群")
+        QGuiApplication.clipboard().setText(self.notice())
+        self.win.toast("群公告已复制，可以直接粘贴到 QQ 群 / 动态")
 
     def refresh(self):
         c = self.win.cfg
-        port, tok = c["web"]["port"], c["qq"]["access_token"]
+        port, tok, url = c["web"]["port"], c["qq"]["access_token"], c["web"]["public_url"]
         ws = f"ws://127.0.0.1:{port}/onebot/v11/ws"
-        notice = html.escape(self.NOTICE).replace("\n", "<br>")
+        notice = html.escape(self.notice()).replace("\n", "<br>")
+        local = "127.0.0.1" in url or "localhost" in url
         self.text.setHtml(f"""
 <style>h3{{color:{PINK};margin-top:18px}} code{{background:#f1f2f3;padding:2px 6px;border-radius:4px}}
 li{{margin:4px 0}} .box{{background:#fff6e0;padding:10px;border-radius:8px}}</style>
-<h3>第一次使用，按顺序做这 4 步</h3>
+<h3>第一次使用，按顺序做这 3 步</h3>
 <ol>
-<li><b>填设置：</b>左边「⚙ 设置」→ 填直播间号 → 点「检测直播间」→ 填舰长群号、你的 QQ → 保存。</li>
-<li><b>准备机器人 QQ：</b>下载 <a href="https://github.com/NapNeko/NapCatQQ/releases">NapCat</a>
-  （选名字带 Shell 和 Windows 的一键包），解压后启动，用 <b>QQ 小号</b> 扫码登录。</li>
-<li><b>让 NapCat 连上本软件：</b>打开 NapCat 网页控制台 → 网络配置 → 新建 <b>WebSocket 客户端</b>：
-  <ul><li>URL 填：<code>{ws}</code>（上方按钮可一键复制）</li>
-  <li>消息格式：<code>Array</code>；{'Token 填：<code>' + html.escape(tok) + '</code>' if tok else 'Token 留空'}；打开「启用」并保存</li></ul></li>
-<li><b>启动：</b>回到「🏠 运行状态」点「启动机器人」。「QQ 连接」显示 <b>已连接</b> 就大功告成了！
-  再把机器人小号拉进舰长群，设成管理员。</li>
+<li><b>填设置：</b>左边「⚙ 设置」→ 填直播间号 → 点「检测直播间」→ 保存。</li>
+<li><b>让观众能打开登记网页：</b>{"现在的地址是 <code>" + html.escape(url) + "</code>，<b>只有这台电脑能打开</b>，请先看下面「让观众用手机打开登记网页」。" if local else "登记网址：<code>" + html.escape(url) + "</code>"}</li>
+<li><b>发给舰长们：</b>「🏠 运行状态」→「🌐 观众登记网页」点「二维码」保存图片，或者点上方「复制群公告」，
+  发到舰长群公告、B站动态、直播间公告都可以。</li>
 </ol>
 <h3>舰长怎么用（可复制为群公告）</h3>
 <div class="box">{notice}</div>
 <h3>你平时要做的</h3>
 <ul>
-<li>机器人私聊你「待审核」时：到「🚢 舰长管理」选中那条 →「🖼 查看截图」→ 没问题就点「✔ 通过」，机器人会自动通知对方。</li>
+<li>看到「舰长管理 🔴」：选中待审核的那条 →「🖼 查看截图」→ 没问题点「✔ 通过」。观众刷新登记页面就能填写地址。</li>
+<li>看到「📝 地址修改申请」：观众换了手机修改地址时需要你确认，核对后点「同意」。</li>
 <li>准备寄礼物：「舰长管理」选好月份 →「导出 Excel 发货表」；寄出后选中点「📦 标记已发货」。</li>
-<li>有人没填地址：「运行状态」点「提醒未填地址的舰长」，机器人会挨个私聊提醒。</li>
 <li>观众私信你新地址：在「舰长管理」双击他那一行，直接帮他改。</li>
+<li>管理舰长群：可以把 QQ 群设成「需要回答问题」，让观众填写登记成功后看到的<b>入群口令</b>，
+  你在「舰长管理」搜索这个口令就能核对是不是本月舰长。</li>
 </ul>
-<h3>让观众用手机打开填写链接</h3>
-<p>默认的 <code>127.0.0.1</code> 只有这台电脑能打开。要让观众用手机填写，任选一种：</p>
+<h3>让观众用手机打开登记网页</h3>
+<p>默认的 <code>127.0.0.1</code> 只有这台电脑能打开。任选一种，然后把得到的网址填到「设置 → 观众访问地址」：</p>
 <ul>
-<li><b>内网穿透（简单）：</b>用 cpolar 等工具把本机 <code>{port}</code> 端口映射出去，把得到的网址填到设置里的「观众访问地址」。电脑关机时观众填不了。</li>
-<li><b>云服务器（长期推荐）：</b>把整个软件文件夹和 NapCat 放到云服务器上运行，开放 <code>{port}</code> 端口，「观众访问地址」填 <code>http://服务器IP:{port}</code>。</li>
+<li><b>内网穿透（简单）：</b>用 cpolar 等工具把本机 <code>{port}</code> 端口映射出去。电脑关机或软件关闭时观众打不开。</li>
+<li><b>云服务器（长期推荐）：</b>把整个软件文件夹放到 Windows 云服务器上运行，开放 <code>{port}</code> 端口，
+  「观众访问地址」填 <code>http://服务器IP:{port}</code>。</li>
 </ul>
+<h3>QQ 机器人（可选）</h3>
+<p>不用 QQ 机器人也能收集地址。如果想让机器人在群里自动识别截图、私聊处理改地址、通知审核结果：</p>
+<ol>
+<li>NapCat 已停止维护，推荐使用 <a href="https://luckylilliadoc.pages.dev/">LLBot</a>（接入方式和 NapCat 一样，都支持 OneBot 11），
+  用 <b>QQ 小号</b>登录。⚠️ 这类非官方工具有被 QQ 风控、封号的风险。</li>
+<li>在协议端里开启 OneBot 11 的<b>反向 WebSocket</b>，地址填 <code>{ws}</code>，
+  {"Token 填 <code>" + html.escape(tok) + "</code>" if tok else "Token 留空"}。</li>
+<li>「⚙ 设置」勾选「启用 QQ 机器人」，填舰长群号和你的 QQ，保存并重启服务。「💬 QQ 机器人」显示 <b>已连接</b> 即可。</li>
+</ol>
 <h3>数据与隐私</h3>
-<p>所有数据都在软件目录下的 <code>data</code> 文件夹（上方「运行状态」页可一键打开）。请定期备份，
+<p>所有数据都在软件目录下的 <code>data</code> 文件夹（「运行状态」页可一键打开）。请定期备份，
 <b>不要发给别人</b>：里面有舰长的手机号和地址。</p>
 """)
+
+
+class QrDialog(QDialog):
+    """登记网址二维码，可保存成图片发群公告 / 动态"""
+
+    def __init__(self, parent, url, streamer):
+        super().__init__(parent)
+        import qrcode
+        self.setWindowTitle("登记网页二维码")
+        q = qrcode.QRCode(border=0, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        q.add_data(url)
+        q.make(fit=True)
+        m = q.get_matrix()
+        n = len(m)
+        cell = max(6, 420 // n)
+        qr = cell * n
+        W, H = qr + 100, qr + 210
+        pm = QPixmap(W, H)
+        pm.fill(QColor("white"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QColor(PINK))
+        p.setFont(QFont("Microsoft YaHei UI", 20, QFont.Bold))
+        p.drawText(0, 22, W, 44, Qt.AlignCenter, "🚢 舰长礼物登记")
+        p.setPen(QColor("#61666d"))
+        p.setFont(QFont("Microsoft YaHei UI", 12))
+        p.drawText(0, 62, W, 28, Qt.AlignCenter, f"{streamer} 的直播间" if streamer else "")
+        x0, y0 = 50, 100
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#18191c"))
+        for y, row in enumerate(m):
+            for x, on in enumerate(row):
+                if on:
+                    p.drawRect(x0 + x * cell, y0 + y * cell, cell, cell)
+        p.setPen(QColor("#18191c"))
+        p.setFont(QFont("Microsoft YaHei UI", 12))
+        p.drawText(0, y0 + qr + 18, W, 28, Qt.AlignCenter, "微信 / QQ / 浏览器扫码，登记收货地址")
+        p.setPen(QColor("#9499a0"))
+        p.setFont(QFont("Microsoft YaHei UI", 9))
+        p.drawText(0, y0 + qr + 50, W, 24, Qt.AlignCenter, url)
+        p.end()
+        self.pm = pm
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        if "127.0.0.1" in url or "localhost" in url:
+            lay.addWidget(label("⚠️ 当前网址只有这台电脑能打开，观众扫码会打不开。请先在「设置 → 观众访问地址」"
+                                "填写内网穿透或云服务器的地址（见「使用帮助」）。", "hint", True))
+        img = QLabel()
+        img.setPixmap(pm.scaledToWidth(min(W, 420), Qt.SmoothTransformation))
+        img.setAlignment(Qt.AlignCenter)
+        lay.addWidget(img)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn("复制图片", None, self.copy))
+        row.addWidget(btn("保存图片", "primary", self.save))
+        row.addWidget(btn("关闭", None, self.accept))
+        lay.addLayout(row)
+
+    def copy(self):
+        QGuiApplication.clipboard().setPixmap(self.pm)
+        self.parent().toast("二维码图片已复制，可以直接粘贴到 QQ / 微信")
+
+    def save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "保存二维码", os.path.join(os.path.expanduser("~"), "Desktop",
+                                              "舰长礼物登记二维码.png"), "图片 (*.png)")
+        if path and self.pm.save(path):
+            self.parent().toast(f"已保存：{path}")
+
+
+class RequestsDialog(QDialog):
+    """观众换了设备在网页上提交的地址修改，需要主播确认"""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("地址修改申请")
+        self.resize(900, 460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.addWidget(label("观众用<b>其他手机 / 浏览器</b>修改收货信息时，为防止别人冒用 UID 改地址，需要你确认。"
+                            "可以对照原地址、或联系本人核实后再同意。", "hint", True))
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["提交时间", "舰长", "原收货信息", "新收货信息"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setWordWrap(True)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        self.empty = label("", "hint")
+        row.addWidget(self.empty)
+        row.addStretch(1)
+        row.addWidget(btn("✔ 同意修改", "ok", lambda: self.resolve(True)))
+        row.addWidget(btn("✘ 拒绝", "danger", lambda: self.resolve(False)))
+        row.addWidget(btn("关闭", None, self.accept))
+        lay.addLayout(row)
+        self.load()
+
+    def load(self):
+        self.rows = db.list_requests()
+        self.table.setRowCount(len(self.rows))
+        for i, r in enumerate(self.rows):
+            old = "\n".join(x for x in (r["old_receiver"], r["old_phone"], r["old_address"]) if x) or "（之前未填写）"
+            new = f"{r['receiver']}\n{r['phone']}\n{r['address']}"
+            vals = [r["created_at"][5:16], f"{r['bili_name'] or ''}\nUID {r['bili_uid'] or '-'}", old, new]
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setData(Qt.UserRole, r["id"])
+                if j == 3:
+                    it.setForeground(QColor("#1a7f3c"))
+                if r.get("note"):
+                    it.setToolTip(r["note"])
+                self.table.setItem(i, j, it)
+        self.table.resizeRowsToContents()
+        self.empty.setText("" if self.rows else "暂时没有待确认的修改申请 🎉")
+
+    def resolve(self, approve):
+        ids = list(dict.fromkeys(self.table.item(ix.row(), 0).data(Qt.UserRole)
+                                 for ix in self.table.selectionModel().selectedRows()))
+        if not ids:
+            QMessageBox.information(self, APP_NAME, "请先选中一条申请。")
+            return
+        if not approve and QMessageBox.question(self, APP_NAME, f"确定拒绝选中的 {len(ids)} 条修改申请吗？") \
+                != QMessageBox.Yes:
+            return
+        for rid in ids:
+            r = db.resolve_request(rid, approve)
+            if r and approve:
+                self.win.notify_qq(r["qq"], "✅ 你的舰长礼物收货信息修改已经主播确认生效。")
+        self.load()
+        self.win.data_changed()
 
 
 # ============================== 主窗口 ==============================
@@ -1161,16 +1351,16 @@ class MainWindow(QMainWindow):
         if not self.cfg["streamer"]["room_id"]:
             self.nav.setCurrentRow(2)
             QMessageBox.information(self, APP_NAME,
-                                    "欢迎使用舰长礼物小助手！\n\n第一次使用，请先在「设置」里填写你的直播间号、"
-                                    "舰长群群号和你自己的 QQ，然后点「保存设置」。\n\n"
-                                    "接入 QQ 的步骤可以看左边的「使用帮助」。")
+                                    "欢迎使用舰长礼物小助手！\n\n第一次使用，请先在「设置」里填写你的直播间号，"
+                                    "然后点「保存设置」。\n\n之后把「观众登记网页」的网址或二维码发给舰长们，"
+                                    "他们就能自助验证、填写收货地址。详细步骤见左边的「使用帮助」。")
         elif self.cfg["gui"]["autostart"]:
             self.start_bot()
 
     def toast(self, text):
         self.statusBar().showMessage(text, 4000)
 
-    # ---------- 机器人 ----------
+    # ---------- 后台服务 ----------
     def toggle_bot(self):
         if self.bot.running():
             self.bot.stop()
@@ -1199,7 +1389,7 @@ class MainWindow(QMainWindow):
         wait_then_start()
 
     def _bot_state(self, running):
-        self.dash.b_toggle.setText("停止机器人" if running else "启动机器人")
+        self.dash.b_toggle.setText("停止服务" if running else "启动服务")
         self.dash.b_toggle.setProperty("kind", "danger" if running else "primary")
         self.dash.b_toggle.style().unpolish(self.dash.b_toggle)
         self.dash.b_toggle.style().polish(self.dash.b_toggle)
@@ -1207,10 +1397,37 @@ class MainWindow(QMainWindow):
             self.dash.c_bot.set("● 启动中…", "正在加载（第一次启动可能要十几秒）", "#c27c00")
         else:
             self.status_info = {}
-            self.dash.c_bot.set("○ 未运行", "点下面的按钮启动。机器人运行时，请不要关闭本窗口。", "#9499a0")
-            self.dash.c_qq.set("—", "机器人启动后显示")
-            self.dash.c_bili.set("—", "机器人启动后显示")
+            self.dash.c_bot.set("○ 未运行", "点下面的按钮启动。服务运行时，请不要关闭本窗口。", "#9499a0")
+            self._qq_card(None)
+            self.dash.c_bili.set("—", "服务启动后显示")
+        self._web_card()
         self._side()
+
+    def _web_card(self):
+        url = self.cfg["web"]["public_url"]
+        local = "127.0.0.1" in url or "localhost" in url
+        if not self.bot.running():
+            self.dash.c_web.set("○ 未开放", url + "\n启动服务后观众才能打开", "#9499a0")
+        elif local:
+            self.dash.c_web.set("● 仅本机", url + "\n观众用手机打不开，请在设置里填写观众访问地址（见使用帮助）", "#c27c00")
+        else:
+            self.dash.c_web.set("● 已开放", url + "\n把网址或二维码发给舰长们", "#1a7f3c")
+
+    def _qq_card(self, data):
+        d = self.dash
+        on = bool(self.cfg["qq"]["enabled"])
+        d.b_qq_launch.setVisible(on)
+        d.b_qq_copy.setVisible(on)
+        d.b_qq_set.setVisible(not on)
+        if not on:
+            d.c_qq.set("未启用", "收集地址不需要 QQ 机器人。想在群里自动识别截图，可在设置里启用（需要 LLBot 等协议端）",
+                       "#9499a0")
+        elif data is None:
+            d.c_qq.set("—", "服务启动后显示")
+        elif data.get("bots"):
+            d.c_qq.set("● 已连接", f"机器人 QQ：{', '.join(data['bots'])}", "#1a7f3c")
+        else:
+            d.c_qq.set("○ 未连接", f"请启动 QQ 协议端（LLBot 等），开启反向 WebSocket：{self.ws_url()}", "#c27c00")
 
     def _tick(self):
         self.update_counts()
@@ -1220,19 +1437,14 @@ class MainWindow(QMainWindow):
         def got(ok, data):
             if not self.bot.running():
                 return
-            port = self.cfg["web"]["port"]
             if not ok or not isinstance(data, dict):
                 self.dash.c_bot.set("● 启动中…", "正在加载（第一次启动可能要十几秒）", "#c27c00")
                 return
             self.status_info = data
-            self.dash.c_bot.set("● 运行中", f"观众填写网页：{self.cfg['web']['public_url']}", "#1a7f3c")
-            bots = data.get("bots") or []
-            if bots:
-                self.dash.c_qq.set("● 已连接", f"机器人 QQ：{', '.join(bots)}", "#1a7f3c")
-            else:
-                self.dash.c_qq.set("○ 未连接",
-                                   f"请启动 NapCat，并在其中添加 WebSocket 客户端："
-                                   f"ws://127.0.0.1:{port}/onebot/v11/ws（详见「使用帮助」）", "#c27c00")
+            self.dash.c_bot.set("● 运行中", "登记网页" + ("和 QQ 机器人" if data.get("qq_enabled") else "") +
+                                "正在运行，请不要关闭本窗口", "#1a7f3c")
+            self._web_card()
+            self._qq_card(data)
             n = data.get("guards")
             if n is None:
                 self.dash.c_bili.set("获取中…" if not data.get("guards_time") else "获取失败",
@@ -1251,21 +1463,30 @@ class MainWindow(QMainWindow):
         sh = sum(r["status"] == "verified" and bool(r["shipped"]) for r in rows)
         self.dash.c_month.title.setText(f"📦 本月舰长（{db.this_month()}）")
         self.dash.c_month.set(f"已验证 {v} 人", f"待审核 {p} · 未填地址 {na} · 已发货 {sh}")
-        self.nav.item(1).setText("🚢  舰长管理" + (f"  🔴 {p}" if p else ""))
-        self.nav.item(1).setToolTip(f"{p} 人待审核" if p else "")
-        counts = (len(rows), v, p, na, sum(len(r["address"] or "") for r in rows))
+        rq = db.count_pending_requests()
+        self.dash.c_req.set(f"{rq} 条待确认" if rq else "暂无", "观众换了手机修改地址时，需要你确认后才生效",
+                            "#c27c00" if rq else "#9499a0")
+        self.guards.b_req.setText(f"📝 修改申请（{rq}）" if rq else "📝 修改申请")
+        self.nav.item(1).setText("🚢  舰长管理" + (f"  🔴 {p + rq}" if p + rq else ""))
+        self.nav.item(1).setToolTip(f"{p} 人待审核，{rq} 条地址修改申请" if p + rq else "")
+        counts = (len(rows), v, p, na, sum(len(r["address"] or "") for r in rows), rq)
         if self._last_counts is not None and counts != self._last_counts and self.stack.currentIndex() == 1:
             self.guards.load()                        # 有新数据时自动刷新表格
         if self._last_counts is not None and p > self._last_counts[2]:
             self.toast(f"🔔 有新的待审核舰长（{p} 人待审核）")
+            QApplication.alert(self)
+        elif self._last_counts is not None and rq > self._last_counts[5]:
+            self.toast(f"🔔 有新的地址修改申请（{rq} 条待确认）")
             QApplication.alert(self)
         self._last_counts = counts
 
     def _side(self):
         run = self.bot.running()
         bots = self.status_info.get("bots") or []
-        self.side_status.setText(("🟢 机器人运行中" if run else "⚪ 机器人未运行") +
-                                 ("\n🟢 QQ 已连接" if bots else ("\n🟠 QQ 未连接" if run else "")))
+        qq_line = ""
+        if run and self.cfg["qq"]["enabled"]:
+            qq_line = "\n🟢 QQ 已连接" if bots else "\n🟠 QQ 未连接"
+        self.side_status.setText(("🟢 服务运行中" if run else "⚪ 服务未运行") + qq_line)
 
     def data_changed(self):
         self.guards.load()
@@ -1273,10 +1494,36 @@ class MainWindow(QMainWindow):
 
     def settings_saved(self):
         self.help.refresh()
+        self._web_card()
+        self._qq_card(self.status_info if self.bot.running() else None)
         self._tick()
+
+    # ---------- 登记网页 ----------
+    def copy_public_url(self):
+        QGuiApplication.clipboard().setText(self.cfg["web"]["public_url"])
+        self.toast(f"已复制登记网址：{self.cfg['web']['public_url']}")
+
+    def open_public_url(self):
+        if not self.bot.running():
+            QMessageBox.information(self, APP_NAME, "请先启动服务。")
+            return
+        QDesktopServices.openUrl(QUrl(f"http://127.0.0.1:{self.cfg['web']['port']}/"))
+
+    def show_qr(self):
+        QrDialog(self, self.cfg["web"]["public_url"], self.cfg["streamer"]["name"]).exec()
+
+    def open_requests(self):
+        RequestsDialog(self).exec()
+        self.update_counts()
 
     # ---------- 需要机器人帮忙的操作 ----------
     def notify_qq(self, qq, text):
+        if db.is_web(qq):
+            self.dash.append_log("[界面] 这位舰长是网页登记的，他再次打开登记页面就能看到结果")
+            return
+        if not self.cfg["qq"]["enabled"]:
+            self.dash.append_log(f"[界面] 未启用 QQ 机器人，没有通知 QQ {qq}")
+            return
         if not self.bot.running() or not (self.status_info.get("bots")):
             self.dash.append_log(f"[界面] QQ 未连接，没能通知 {qq}（数据已保存，可以之后手动告诉对方）")
             return
@@ -1291,8 +1538,15 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.information(self, APP_NAME, "本月已验证的舰长都填好地址啦 🎉")
             return
+        qq_rows = [r for r in rows if not db.is_web(r["qq"])]
+        if not self.cfg["qq"]["enabled"] or not qq_rows:
+            QGuiApplication.clipboard().setText(self.help.notice())
+            QMessageBox.information(self, APP_NAME, f"本月还有 {len(rows)} 位舰长没填地址。\n\n"
+                                    "没有启用 QQ 机器人（或他们是网页登记的），没法私聊提醒。"
+                                    "群公告已复制到剪贴板，可以发到舰长群 / 动态里提醒大家。")
+            return
         if not self.status_info.get("bots"):
-            QMessageBox.warning(self, APP_NAME, "QQ 还没连接，无法发送提醒。请先启动机器人并连接 NapCat。")
+            QMessageBox.warning(self, APP_NAME, "QQ 还没连接，无法发送提醒。请先启动服务并连接 QQ 协议端。")
             return
         if QMessageBox.question(self, APP_NAME, f"将私聊提醒 {len(rows)} 位还没填地址的舰长（每条间隔 1.5 秒），确定吗？") \
                 != QMessageBox.Yes:
@@ -1308,7 +1562,7 @@ class MainWindow(QMainWindow):
 
     def refresh_guard_list(self):
         if not self.bot.running():
-            QMessageBox.information(self, APP_NAME, "请先启动机器人。")
+            QMessageBox.information(self, APP_NAME, "请先启动服务。")
             return
         self.dash.c_bili.set("刷新中…", None, "#c27c00")
         self.api.post("/api/refresh_guards", {}, lambda ok, d: self._tick())
@@ -1318,13 +1572,13 @@ class MainWindow(QMainWindow):
 
     def copy_ws_url(self):
         QGuiApplication.clipboard().setText(self.ws_url())
-        self.toast(f"已复制：{self.ws_url()}（粘贴到 NapCat 的 WebSocket 客户端 URL）")
+        self.toast(f"已复制：{self.ws_url()}（粘贴到 QQ 协议端的反向 WebSocket 地址）")
 
     def launch_napcat(self):
         p = (self.cfg["napcat"]["path"] or "").strip()
         if not p or not os.path.exists(p):
-            if QMessageBox.question(self, APP_NAME, "还没有设置 NapCat 的位置。\n\n现在选择 NapCat 的启动文件吗？"
-                                                    "（还没下载的话，请先看「使用帮助」）") == QMessageBox.Yes:
+            if QMessageBox.question(self, APP_NAME, "还没有设置 QQ 协议端（LLBot / NapCat）的位置。\n\n"
+                                                    "现在选择它的启动文件吗？（还没下载的话，请先看「使用帮助」）") == QMessageBox.Yes:
                 self.nav.setCurrentRow(2)
                 self.settings.browse_napcat()
                 if self.settings.napcat.text():
@@ -1332,11 +1586,11 @@ class MainWindow(QMainWindow):
             return
         if not QProcess.startDetached(p, [], os.path.dirname(p))[0]:
             os.startfile(p)                           # noqa: S606  兜底：用系统方式打开
-        self.toast("已启动 NapCat，请在弹出的窗口里扫码登录机器人 QQ")
+        self.toast("已启动 QQ 协议端，请在弹出的窗口里登录机器人 QQ")
 
     def open_web_admin(self):
         if not self.bot.running():
-            QMessageBox.information(self, APP_NAME, "请先启动机器人（网页后台和机器人一起运行）。")
+            QMessageBox.information(self, APP_NAME, "请先启动服务。")
             return
         QGuiApplication.clipboard().setText(self.cfg["web"]["admin_password"])
         QDesktopServices.openUrl(QUrl(f"http://127.0.0.1:{self.cfg['web']['port']}/admin"))
@@ -1344,7 +1598,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self.bot.running():
-            if QMessageBox.question(self, APP_NAME, "关闭窗口会同时停止 QQ 机器人，观众将无法验证和填写地址。\n\n确定退出吗？") \
+            if QMessageBox.question(self, APP_NAME, "关闭窗口会同时停止后台服务，观众将打不开登记网页。\n\n确定退出吗？") \
                     != QMessageBox.Yes:
                 e.ignore()
                 return

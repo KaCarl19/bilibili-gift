@@ -1,5 +1,9 @@
-"""SQLite 数据层。所有数据存放在 data/guard.db"""
+"""SQLite 数据层。所有数据存放在 data/guard.db
+
+“qq” 字段是登记人的身份标识：通过 QQ 机器人登记的是 QQ 号；通过网页登记的是 "web:B站UID"。
+"""
 import secrets
+import string
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -45,6 +49,15 @@ CREATE TABLE IF NOT EXISTS tokens (
     qq          TEXT NOT NULL,
     expires_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS address_requests (   -- 网页上的地址修改申请（需主播确认）
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    qq          TEXT NOT NULL,           -- 要修改的是哪条记录的地址
+    bili_uid    TEXT,
+    receiver    TEXT, phone TEXT, address TEXT,
+    note        TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',   -- pending / approved / rejected
+    created_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS joins (      -- 进群待验证记录
     qq          TEXT NOT NULL,
     group_id    TEXT NOT NULL,
@@ -77,15 +90,44 @@ def conn():
         c.close()
 
 
+WEB_PREFIX = "web:"
+
+
+def is_web(owner) -> bool:
+    return str(owner).startswith(WEB_PREFIX)
+
+
+def web_owner(uid) -> str:
+    return f"{WEB_PREFIX}{uid}"
+
+
 def init():
     with conn() as c:
         c.executescript(SCHEMA)
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(guards)")}
+        for col in ("contact", "join_code"):          # 旧版本数据库补字段
+            if col not in cols:
+                c.execute(f"ALTER TABLE guards ADD COLUMN {col} TEXT")
+
+
+_CODE_CHARS = "".join(ch for ch in string.ascii_uppercase + string.digits if ch not in "0O1IL")
+
+
+def _ensure_join_code(c, gid):
+    """已验证的记录生成一个入群口令（加舰长群时填写，方便主播核对）"""
+    r = c.execute("SELECT status, join_code FROM guards WHERE id=?", (gid,)).fetchone()
+    if r and r["status"] == "verified" and not r["join_code"]:
+        while True:
+            code = "".join(secrets.choice(_CODE_CHARS) for _ in range(6))
+            if not c.execute("SELECT 1 FROM guards WHERE join_code=?", (code,)).fetchone():
+                break
+        c.execute("UPDATE guards SET join_code=? WHERE id=?", (code, gid))
 
 
 # ---------------- 舰长记录 ----------------
 def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None,
                  guard_level=None, source=None, screenshot=None, shot_hash=None,
-                 ocr_text=None, note=None):
+                 ocr_text=None, note=None, contact=None):
     """同一个 QQ 同一个月只保留一条记录；已验证的记录不会被降级为待审核。"""
     qq = str(qq)
     with conn() as c:
@@ -97,17 +139,19 @@ def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None
                 """UPDATE guards SET bili_uid=COALESCE(?,bili_uid), bili_name=COALESCE(?,bili_name),
                    guard_level=COALESCE(?,guard_level), start_date=?, status=?, source=?,
                    screenshot=COALESCE(?,screenshot), shot_hash=COALESCE(?,shot_hash),
-                   ocr_text=COALESCE(?,ocr_text), note=? WHERE id=?""",
+                   ocr_text=COALESCE(?,ocr_text), note=?, contact=COALESCE(?,contact) WHERE id=?""",
                 (bili_uid, bili_name, guard_level, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, old["id"]))
+                 screenshot, shot_hash, ocr_text, note, contact, old["id"]))
         else:
             c.execute(
                 """INSERT INTO guards (qq,bili_uid,bili_name,guard_level,month,start_date,status,
-                   source,screenshot,shot_hash,ocr_text,note,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   source,screenshot,shot_hash,ocr_text,note,contact,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (qq, bili_uid, bili_name, guard_level, month, start_date, status, source,
-                 screenshot, shot_hash, ocr_text, note, now()))
-        return dict(c.execute("SELECT * FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone())
+                 screenshot, shot_hash, ocr_text, note, contact, now()))
+        gid = c.execute("SELECT id FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone()["id"]
+        _ensure_join_code(c, gid)
+        return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
 
 
 def get_guard(gid):
@@ -119,6 +163,7 @@ def get_guard(gid):
 def set_guard_status(gid, status, note=None):
     with conn() as c:
         c.execute("UPDATE guards SET status=?, note=COALESCE(?,note) WHERE id=?", (status, note, gid))
+        _ensure_join_code(c, gid)
 
 
 def set_shipped(gid, shipped: bool):
@@ -143,6 +188,14 @@ def uid_used_by_other(bili_uid, qq, month):
         r = c.execute("SELECT qq FROM guards WHERE bili_uid=? AND month=? AND qq<>? AND status='verified'",
                       (str(bili_uid), month, str(qq))).fetchone()
         return r["qq"] if r else None
+
+
+def verified_by_uid(bili_uid, month):
+    """本月这个 B站账号已验证的记录（不管是 QQ 还是网页登记的）"""
+    with conn() as c:
+        r = c.execute("SELECT * FROM guards WHERE bili_uid=? AND month=? AND status='verified' ORDER BY id LIMIT 1",
+                      (str(bili_uid), month)).fetchone()
+        return dict(r) if r else None
 
 
 def guards_of_qq(qq):
@@ -207,6 +260,15 @@ def save_address(qq, receiver, phone, address):
 
 
 # ---------------- 填写链接 token ----------------
+def month_end_hours() -> int:
+    """距离“本月结束 + 宽限天数”还有多少小时（网页登记的链接这个月内一直有效）"""
+    today = date.today()
+    first_next = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    end = datetime.combine(first_next + timedelta(days=int(RULES.get("edit_grace_days", 0) or 0)),
+                           datetime.min.time())
+    return max(1, int((end - datetime.now()).total_seconds() // 3600) + 1)
+
+
 def new_token(qq, hours):
     t = secrets.token_urlsafe(16)
     exp = (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
@@ -220,6 +282,39 @@ def qq_of_token(token):
     with conn() as c:
         r = c.execute("SELECT qq FROM tokens WHERE token=? AND expires_at >= ?", (token, now())).fetchone()
         return r["qq"] if r else None
+
+
+# ---------------- 地址修改申请 ----------------
+def add_request(qq, bili_uid, receiver, phone, address, note=""):
+    with conn() as c:
+        c.execute("DELETE FROM address_requests WHERE qq=? AND status='pending'", (str(qq),))  # 只保留最新一次
+        c.execute("""INSERT INTO address_requests (qq,bili_uid,receiver,phone,address,note,created_at)
+                     VALUES (?,?,?,?,?,?,?)""", (str(qq), bili_uid, receiver, phone, address, note, now()))
+
+
+def list_requests(status="pending"):
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT r.*, a.receiver AS old_receiver, a.phone AS old_phone, a.address AS old_address,
+                      (SELECT bili_name FROM guards g WHERE g.qq=r.qq ORDER BY month DESC LIMIT 1) AS bili_name
+               FROM address_requests r LEFT JOIN addresses a ON a.qq=r.qq
+               WHERE r.status=? ORDER BY r.id""", (status,))]
+
+
+def resolve_request(rid, approve: bool):
+    with conn() as c:
+        r = c.execute("SELECT * FROM address_requests WHERE id=? AND status='pending'", (rid,)).fetchone()
+        if not r:
+            return None
+        c.execute("UPDATE address_requests SET status=? WHERE id=?", ("approved" if approve else "rejected", rid))
+    if approve:
+        save_address(r["qq"], r["receiver"], r["phone"], r["address"])
+    return dict(r)
+
+
+def count_pending_requests():
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) FROM address_requests WHERE status='pending'").fetchone()[0]
 
 
 # ---------------- 进群待验证 ----------------

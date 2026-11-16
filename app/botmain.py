@@ -21,10 +21,27 @@ def run_bot():
         onebot_access_token=QQ.get("access_token") or None,
     )
     logger.add(DATA_DIR / "bot.log", rotation="5 MB", retention=3, encoding="utf-8", level="INFO")
-    nonebot.get_driver().register_adapter(Adapter)
+    driver = nonebot.get_driver()
 
-    from app import db, web
+    from app import bili, db, web
     db.init()
     nonebot.get_app().include_router(web.router)
-    nonebot.load_plugin("app.plugins.guard_bot")
+
+    if QQ.get("enabled"):
+        driver.register_adapter(Adapter)
+        nonebot.load_plugin("app.plugins.guard_bot")
+        logger.info("QQ 机器人已启用，等待 QQ 协议端（LLBot / NapCat）连接")
+    else:
+        logger.info("QQ 机器人未启用：只运行观众登记网页")
+
+    @driver.on_startup
+    async def _keep_guard_list():
+        import asyncio
+
+        async def loop():
+            while True:                       # 每 5 分钟刷新一次 B站舰长名单
+                await bili.guard_list()
+                await asyncio.sleep(300)
+        asyncio.create_task(loop())
+
     nonebot.run()

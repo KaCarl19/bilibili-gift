@@ -9,6 +9,9 @@
       {% if guard.bili_name %}（{{ guard.bili_name }}）{% endif %}
       <br><span class="muted">上舰日期 {{ guard.start_date }}</span>
     </p>
+    {% if guard.join_code %}
+    <p class="help">入群口令：<b style="color:var(--pink);letter-spacing:2px">{{ guard.join_code }}</b>（加入舰长群时，验证答案填这个）</p>
+    {% endif %}
   </div>
   <form class="card" method="post" action="/fill">
     {% for e in errors %}<div class="err">{{ e }}</div>{% endfor %}

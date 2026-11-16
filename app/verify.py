@@ -196,3 +196,74 @@ async def bind_uid(qq, uid: str) -> tuple[bool, str]:
     db.upsert_guard(qq, month, rec["start_date"], "verified", bili_uid=uid, bili_name=g["name"],
                     guard_level=g["level"], source="api", note="UID绑定核验")
     return True, f"验证通过！{g['name']}（{g['level']}），上舰日期：{rec['start_date']}"
+
+
+async def web_verify(uid: str, img: bytes | None, claimed: date | None, contact: str = "") -> dict:
+    """观众自助网页登记。
+    返回 {"result": verified / pending / exists / rejected / retry, "msg": 提示, "guard": 记录}
+      exists = 这个 B站账号本月已经登记过（为防止别人改地址，修改需要主播确认）"""
+    owner = db.web_owner(uid)
+    month = db.this_month()
+    contact = (contact or "").strip()[:40] or None
+
+    guards = await bili.guard_list() if BILI.get("check_api", True) else None
+    if guards is not None and uid not in guards:
+        guards = await bili.guard_list(force=True)
+    in_list = None if guards is None else uid in guards
+    g_api = (guards or {}).get(uid) or {}
+
+    if img:
+        try:
+            info, name, h, err = await read_shot(owner, img)
+        except Exception:                                     # noqa: BLE001  不是图片 / 图片损坏
+            return {"result": "retry", "msg": "图片无法识别，请上传 jpg / png 格式的截图。"}
+        if err:
+            return {"result": "rejected", "msg": err}
+        if not info["level"]:
+            _drop(name)
+            return {"result": "retry", "msg": "截图里没识别到「舰长 / 提督 / 总督」字样，请换一张更清晰、完整的截图。"}
+        if not info["has_streamer"]:
+            _drop(name)
+            return {"result": "retry", "msg": f"截图里没看到主播「{STREAMER['name']}」的名字，请上传本直播间的上舰截图。"}
+        if info["date_from"] != "截图":
+            _drop(name)
+            return {"result": "retry", "msg": "截图里没找到开通时间或到期时间。请换一张能看到时间的截图，"
+                                              "或者勾选「我没有截图」并填写上舰日期。"}
+        start = info["start_date"]
+        if start[:7] != month:
+            _drop(name)
+            return {"result": "rejected", "msg": f"截图显示的上舰日期是 {start}，不是本月。按规则只有本月上舰的舰长"
+                                                 "才能登记或修改收货信息。本月续舰后再来吧～"}
+        name_hit = (uid in info["uids"]) or (g_api.get("name") and g_api["name"].replace(" ", "") in info["compact"])
+        shot = dict(screenshot=name, shot_hash=h, ocr_text=info["text"][:2000])
+        how = "本月截图" + ("（含本人昵称）" if name_hit else "")
+    else:
+        if not claimed:
+            return {"result": "retry", "msg": "请上传上舰截图，或者勾选「我没有截图」并填写上舰日期。"}
+        if claimed > date.today():
+            return {"result": "retry", "msg": "上舰日期不能晚于今天。"}
+        if claimed.strftime("%Y-%m") != month:
+            return {"result": "rejected", "msg": f"你填写的上舰日期是 {claimed}，不是本月。按规则只有本月上舰的舰长"
+                                                 "才能登记或修改收货信息。"}
+        start, shot, how = claimed.isoformat(), {}, f"无截图，自述 {claimed} 上舰"
+
+    existing = db.verified_by_uid(uid, month)
+    if existing:
+        return {"result": "exists", "guard": existing,
+                "msg": "这个 B站账号本月已经登记过了。为了防止别人冒用你的账号修改地址，"
+                       "这次修改需要主播确认后才会生效。"}
+
+    level = g_api.get("level") or (info["level"] if img else None)
+    if in_list and img:
+        g = db.upsert_guard(owner, month, start, "verified", bili_uid=uid, bili_name=g_api.get("name"),
+                            guard_level=level, source="web", contact=contact,
+                            note=f"网页登记：UID在舰长列表 + {how}", **shot)
+        return {"result": "verified", "guard": g, "msg": "验证通过！"}
+
+    why = {True: "UID在舰长列表", False: "UID不在当前舰长列表", None: "暂时无法连接B站核对"}[in_list]
+    g = db.upsert_guard(owner, month, start, "pending", bili_uid=uid, bili_name=g_api.get("name"),
+                        guard_level=level, source="web", contact=contact, note=f"网页登记：{how}；{why}", **shot)
+    if g["status"] == "verified":
+        return {"result": "verified", "guard": g, "msg": "验证通过！"}
+    return {"result": "pending", "guard": g,
+            "msg": "资料已提交，需要主播人工确认（" + why + "）。确认后，用这台手机再打开本页面就能填写收货信息。"}

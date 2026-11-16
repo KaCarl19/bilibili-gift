@@ -1,17 +1,19 @@
-"""网页部分：观众填写/修改地址 + 主播后台"""
+"""网页部分：观众自助登记 / 填写修改地址 + 主播后台"""
 import asyncio
 import csv
 import io
 import re
 import secrets
+import time
+from collections import defaultdict
 from datetime import date
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
-from . import db, notify
+from . import db, notify, verify
 from .config import RES, SHOT_DIR, STREAMER, WEB
 
 router = APIRouter()
@@ -33,11 +35,131 @@ def _page(request, name, **ctx):
     return templates.TemplateResponse(request, name, ctx)
 
 
+# ======================= 观众自助登记 =======================
+COOKIE = "gg_t"                         # 记住观众身份（同一台手机再打开就能直接修改）
+MAX_UPLOAD = 8 * 1024 * 1024
+_hits: dict[str, list] = defaultdict(list)
+_ocr_slots = asyncio.Semaphore(2)       # 同时最多识别 2 张截图，避免电脑卡死
+_tickets: dict[str, dict] = {}          # 地址修改申请的临时凭证
+
+
+def _ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+
+
+def _rate_ok(ip: str, limit=15, window=600) -> bool:
+    now = time.time()
+    _hits[ip] = [t for t in _hits[ip] if now - t < window]
+    if len(_hits[ip]) >= limit:
+        return False
+    _hits[ip].append(now)
+    return True
+
+
+def _remember(resp, token):
+    resp.set_cookie(COOKIE, token, max_age=db.month_end_hours() * 3600, httponly=True, samesite="lax")
+    return resp
+
+
+def _check_addr(receiver, phone, address):
+    errors = []
+    if not (1 <= len(receiver) <= 20):
+        errors.append("请填写收件人姓名")
+    if not PHONE_RE.match(phone):
+        errors.append("手机号格式不正确（需11位大陆手机号）")
+    if not (8 <= len(address) <= 200):
+        errors.append("请填写完整的收货地址（省市区 + 详细地址）")
+    return errors
+
+
+def _home(request, **ctx):
+    ctx.setdefault("errors", [])
+    ctx.setdefault("form", {})
+    ctx.setdefault("me", None)
+    ctx.setdefault("today", date.today().isoformat())
+    ctx.setdefault("month", date.today().month)
+    return _page(request, "home.html", **ctx)
+
+
+@router.get("/")
+async def home(request: Request):
+    me = None
+    t = request.cookies.get(COOKIE)
+    owner = db.qq_of_token(t) if t else None
+    if owner:
+        rec = next((r for r in db.guards_of_qq(owner) if r["month"] == db.this_month()), None)
+        me = {"t": t, "guard": db.editable_guard(owner), "rec": rec}
+    return _home(request, me=me)
+
+
+@router.post("/verify")
+async def verify_submit(request: Request, uid: str = Form(""), contact: str = Form(""),
+                        no_shot: str = Form(""), claimed: str = Form(""),
+                        shot: UploadFile | None = File(None)):
+    form = {"uid": uid, "contact": contact, "no_shot": bool(no_shot), "claimed": claimed}
+    uid = re.sub(r"\D", "", uid)
+    if not (3 <= len(uid) <= 16):
+        return _home(request, form=form, errors=["请填写正确的 B站 UID（一串数字，在 B站 App「我的」→ 点头像 可以看到）"])
+    if not _rate_ok(_ip(request)):
+        return _home(request, form=form, errors=["提交太频繁了，请 10 分钟后再试。"])
+    img = None
+    if not no_shot:
+        if shot is None or not shot.filename:
+            return _home(request, form=form, errors=["请上传上舰截图，或者勾选「我没有截图」并填写上舰日期。"])
+        img = await shot.read(MAX_UPLOAD + 1)
+        if len(img) > MAX_UPLOAD:
+            return _home(request, form=form, errors=["截图太大了（超过 8MB），请重新截图后上传。"])
+    claimed_day = None
+    if no_shot:
+        try:
+            claimed_day = date.fromisoformat(claimed)
+        except ValueError:
+            return _home(request, form=form, errors=["请填写上舰日期。"])
+
+    async with _ocr_slots:
+        res = await verify.web_verify(uid, img, claimed_day, contact)
+    r = res["result"]
+    if r in ("retry", "rejected"):
+        return _home(request, form=form, errors=[res["msg"]])
+
+    if r == "exists":
+        g = res["guard"]
+        cookie_t = request.cookies.get(COOKIE) or ""
+        if db.qq_of_token(cookie_t) == g["qq"]:   # 本人（同一台手机）→ 直接去修改
+            return RedirectResponse(f"/fill?t={cookie_t}", status_code=303)
+        ticket = secrets.token_urlsafe(12)
+        _tickets[ticket] = {"qq": g["qq"], "uid": uid, "exp": time.time() + 1800}
+        return _page(request, "request.html", ticket=ticket, msg=res["msg"], errors=[], addr={})
+
+    token = db.new_token(db.web_owner(uid), db.month_end_hours())
+    if r == "verified":
+        return _remember(RedirectResponse(f"/fill?t={token}", status_code=303), token)
+    return _remember(_page(request, "message.html", title="已提交，等待主播确认", msg=res["msg"], home=True), token)
+
+
+@router.post("/request")
+async def request_submit(request: Request, ticket: str = Form(""), receiver: str = Form(""),
+                         phone: str = Form(""), address: str = Form("")):
+    tk = _tickets.get(ticket)
+    if not tk or tk["exp"] < time.time():
+        return _page(request, "message.html", title="页面已过期", msg="请回到登记页面重新验证。", home=True)
+    receiver, phone, address = receiver.strip(), re.sub(r"\D", "", phone), address.strip()
+    errors = _check_addr(receiver, phone, address)
+    if errors:
+        return _page(request, "request.html", ticket=ticket, msg="", errors=errors,
+                     addr={"receiver": receiver, "phone": phone, "address": address})
+    _tickets.pop(ticket, None)
+    db.add_request(tk["qq"], tk["uid"], receiver, phone, address, note=f"网页提交，IP {_ip(request)}")
+    return _page(request, "message.html", title="修改申请已提交", ok=True,
+                 msg="主播确认后，新的收货信息就会生效。感谢上舰！")
+
+
 # ======================= 观众填写 =======================
 def _check_token(t):
     qq = db.qq_of_token(t or "")
     if not qq:
-        return None, None, "链接无效或已过期，请私聊机器人发送「填地址」重新获取。"
+        return None, None, "链接无效或已过期。请重新打开登记页面验证（或私聊机器人发送「填地址」）。"
     g = db.editable_guard(qq)
     if not g:
         return qq, None, "系统查询到你不是本月已验证的舰长，暂时不能填写或修改地址。如有疑问请联系主播。"
@@ -48,12 +170,13 @@ def _check_token(t):
 async def fill_page(request: Request, t: str = ""):
     qq, g, err = _check_token(t)
     if err:
-        return _page(request, "message.html", title="无法填写", msg=err)
+        return _page(request, "message.html", title="无法填写", msg=err, home=True)
     addr = dict(db.get_address(qq) or {})
     draft = db.DRAFTS.get(qq)
     if draft:
         addr.update(draft)
-    return _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft))
+    resp = _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft))
+    return _remember(resp, t)
 
 
 @router.post("/fill")
@@ -63,21 +186,15 @@ async def fill_submit(request: Request, t: str = Form(""), receiver: str = Form(
     if err:
         return _page(request, "message.html", title="无法提交", msg=err)
     receiver, phone, address = receiver.strip(), re.sub(r"\D", "", phone), address.strip()
-    errors = []
-    if not (1 <= len(receiver) <= 20):
-        errors.append("请填写收件人姓名")
-    if not PHONE_RE.match(phone):
-        errors.append("手机号格式不正确（需11位大陆手机号）")
-    if not (8 <= len(address) <= 200):
-        errors.append("请填写完整的收货地址（省市区 + 详细地址）")
+    errors = _check_addr(receiver, phone, address)
     if errors:
         return _page(request, "fill.html", t=t, guard=g, errors=errors,
                      addr={"receiver": receiver, "phone": phone, "address": address})
     first = db.get_address(qq) is None
     db.save_address(qq, receiver, phone, address)
-    return _page(request, "message.html", title="提交成功",
+    return _page(request, "message.html", title="提交成功", ok=True, home=True, join_code=g.get("join_code"),
                  msg=("地址已保存，礼物会寄到这里，感谢上舰！" if first else "地址已更新！")
-                 + " 如需再次修改，重新打开链接即可。", ok=True)
+                 + " 本月内需要再修改的话，用这台手机重新打开登记页面即可。")
 
 
 # ======================= 主播后台 =======================
@@ -169,7 +286,9 @@ async def api_status(_=Depends(admin)):
     from nonebot import get_bots
     from . import bili
     data = bili._cache["data"]
-    return {"bots": list(get_bots().keys()),
+    from .config import QQ
+    return {"bots": list(get_bots().keys()), "qq_enabled": bool(QQ.get("enabled")),
+            "pending_requests": db.count_pending_requests(),
             "guards": len(data) if data is not None else None,
             "guards_time": bili._cache["t"]}
 
@@ -199,6 +318,3 @@ async def api_remind(_=Depends(admin)):
     return {"total": len(rows), "sent": ok}
 
 
-@router.get("/")
-async def index():
-    return RedirectResponse("/admin")
