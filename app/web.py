@@ -12,10 +12,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 from . import db, notify
-from .config import ROOT, SHOT_DIR, STREAMER, WEB
+from .config import RES, SHOT_DIR, STREAMER, WEB
 
 router = APIRouter()
-templates = Jinja2Templates(directory=str(ROOT / "app" / "templates"))
+templates = Jinja2Templates(directory=str(RES / "app" / "templates"))
 security = HTTPBasic()
 
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
@@ -161,6 +161,42 @@ async def admin_shot(name: str, _=Depends(admin)):
     if p.parent != SHOT_DIR.resolve() or not p.exists():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+# ======================= 图形界面调用的接口 =======================
+@router.get("/api/status")
+async def api_status(_=Depends(admin)):
+    from nonebot import get_bots
+    from . import bili
+    data = bili._cache["data"]
+    return {"bots": list(get_bots().keys()),
+            "guards": len(data) if data is not None else None,
+            "guards_time": bili._cache["t"]}
+
+
+@router.post("/api/refresh_guards")
+async def api_refresh(_=Depends(admin)):
+    from . import bili
+    data = await bili.guard_list(force=True)
+    return {"guards": len(data) if data is not None else None}
+
+
+@router.post("/api/notify")
+async def api_notify(qq: str = Form(...), text: str = Form(...), _=Depends(admin)):
+    return {"ok": await notify.send_private(qq, text)}
+
+
+@router.post("/api/remind")
+async def api_remind(_=Depends(admin)):
+    """私聊提醒本月已验证但还没填地址的舰长"""
+    rows = [r for r in db.list_guards(db.this_month(), "verified") if not r["address"]]
+    ok = 0
+    for r in rows:
+        ok += await notify.send_private(
+            r["qq"], f"你好～你是本月「{STREAMER['name']}」的{r['guard_level'] or '舰长'}，"
+                     "还没有填写礼物收货地址哦。私聊我发送「填地址」即可填写～")
+        await asyncio.sleep(1.5)            # 发太快容易被 QQ 风控
+    return {"total": len(rows), "sent": ok}
 
 
 @router.get("/")

@@ -1,6 +1,8 @@
 @echo off
 chcp 65001 >nul
 cd /d %~dp0
-set PYTHONIOENCODING=utf-8
-python bot.py
-pause
+if exist .venv\Scripts\pythonw.exe (
+  start "" .venv\Scripts\pythonw.exe main.py
+) else (
+  start "" pythonw main.py
+)
