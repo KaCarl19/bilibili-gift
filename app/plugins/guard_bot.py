@@ -167,7 +167,7 @@ async def _():
     msg = (f"{db.this_month()} 舰长：已验证 {len(v)}，待审核 {len(p)}，已验证但未填地址 {len(no_addr)}\n"
            f"后台：{WEB['public_url'].rstrip('/')}/admin")
     if no_addr:
-        msg += "\n未填地址：" + "、".join(r["bili_name"] or r["qq"] for r in no_addr[:30])
+        msg += "\n未填地址：" + "、".join(r["bili_name"] or db.contact_text(r) for r in no_addr[:30])
     await stat.finish(msg)
 
 

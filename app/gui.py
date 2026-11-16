@@ -263,10 +263,8 @@ def check_room(room_id: int) -> dict:
 
 
 def who(r) -> str:
-    """表格里“QQ/联系方式”一栏：QQ 登记的显示 QQ 号；网页登记的显示观众留的联系方式"""
-    if db.is_web(r["qq"]):
-        return f"{r['contact']}（网页）" if r.get("contact") else "网页登记"
-    return str(r["qq"])
+    """表格里“QQ/联系方式”一栏（和网页后台共用同一套规则）"""
+    return db.contact_text(r)
 
 
 def export_xlsx(path, rows):
@@ -777,7 +775,7 @@ class AddressDialog(QDialog):
     def __init__(self, parent, r):
         super().__init__(parent)
         self.r = r
-        self.setWindowTitle(f"编辑收货信息 — {r['bili_name'] or r['qq']}")
+        self.setWindowTitle(f"编辑收货信息 — {r['bili_name'] or who(r)}")
         self.setMinimumWidth(460)
         lay = QFormLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
@@ -786,7 +784,7 @@ class AddressDialog(QDialog):
         self.phone = QLineEdit(r["phone"] or "")
         self.addr = QPlainTextEdit(r["address"] or "")
         self.addr.setFixedHeight(80)
-        lay.addRow(label(f"QQ {r['qq']} · {r['guard_level'] or ''} · 上舰 {r['start_date']}", "hint"))
+        lay.addRow(label(f"{who(r)} · {gifts_text(r, ' + ')} · 本期从 {r['start_date']} 开始", "hint"))
         lay.addRow("收件人", self.receiver)
         lay.addRow("手机号", self.phone)
         lay.addRow("收货地址", self.addr)
@@ -868,7 +866,7 @@ class AddGuardDialog(QDialog):
 class ShotDialog(QDialog):
     def __init__(self, parent, r):
         super().__init__(parent)
-        self.setWindowTitle(f"上舰截图 — {r['bili_name'] or r['qq']}")
+        self.setWindowTitle(f"上舰截图 — {r['bili_name'] or who(r)}")
         self.resize(560, 720)
         lay = QVBoxLayout(self)
         p = C.SHOT_DIR / (r["screenshot"] or "")

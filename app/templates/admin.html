@@ -25,19 +25,19 @@
   <div class="card" style="overflow-x:auto">
     <table>
       <thead><tr>
-        <th>本期开始</th><th>状态</th><th>等级</th><th>B站昵称 / UID</th><th>QQ</th>
+        <th>本期开始</th><th>状态</th><th>等级 / 应寄礼物</th><th>B站昵称 / UID</th><th>QQ / 联系方式</th>
         <th>收件人</th><th>手机号</th><th>地址</th><th>截图</th><th>操作</th>
       </tr></thead>
       <tbody>
       {% for r in rows %}
         <tr>
-          <td>{{ r.start_date }}</td>
-          <td><span class="tag {{ r.status }}">{{ status_cn[r.status] }}</span>
+          <td style="white-space:nowrap">{{ r.start_date }}</td>
+          <td><span class="tag {{ r.status }}">{{ "自动续登" if r.auto else status_cn[r.status] }}</span>
               {% if r.shipped %}<br><span class="tag">已发货</span>{% endif %}
-              {% if r.note %}<div class="muted" style="max-width:160px">{{ r.note }}</div>{% endif %}</td>
-          <td class="lv">{{ r.guard_level or "" }}</td>
+              {% if r.note %}<div class="muted" style="min-width:120px;max-width:200px">{{ r.note }}</div>{% endif %}</td>
+          <td><span class="lv">{{ r.guard_level or "" }}</span><br><span class="muted">{{ r.gifts_text }}</span></td>
           <td>{{ r.bili_name or "-" }}<br><span class="muted">{{ r.bili_uid or "" }}</span></td>
-          <td>{{ r.qq }}</td>
+          <td>{{ r.who }}{% if r.join_code %}<br><span class="muted">入群口令 {{ r.join_code }}</span>{% endif %}</td>
           <td>{{ r.receiver or "" }}</td>
           <td>{{ r.phone or "" }}</td>
           <td style="min-width:200px">{{ r.address or "" }}

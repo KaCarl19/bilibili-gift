@@ -177,6 +177,13 @@ def update_guard(gid, **fields):
         c.execute(f"UPDATE guards SET {cols} WHERE id=?", (*fields.values(), gid))
 
 
+def contact_text(r) -> str:
+    """“QQ/联系方式”一栏：QQ 登记的显示 QQ 号；网页登记的显示观众留的联系方式（内部标识 web:UID 不给人看）"""
+    if is_web(r["qq"]):
+        return f"{r['contact']}（网页登记）" if r.get("contact") else "网页登记（未留联系方式）"
+    return f"QQ {r['qq']}"
+
+
 def gifts_of(r) -> list[str]:
     """这条记录要寄的礼物；老数据没存的按等级算"""
     g = r.get("gifts")
