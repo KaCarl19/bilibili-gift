@@ -101,7 +101,7 @@
 
 ### 第 1 步：下载软件
 
-1. 打开 👉 **[下载页面](https://github.com/KaCarl19/bilibili-guard-gift/releases/latest)**，在 Assets 里点 **`guard-gift-windows.zip`** 下载
+1. 打开 👉 **[下载页面](https://github.com/KaCarl19/bilibili-gift/releases/latest)**，在 Assets 里点 **`guard-gift-windows.zip`** 下载
 2. 右键压缩包 → **全部解压缩**，放到一个好找的地方（比如桌面）。⚠️ 不要在压缩包里直接双击运行
 3. 打开解压出来的文件夹，双击 **`舰长礼物小助手.exe`**
 
