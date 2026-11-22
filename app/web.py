@@ -219,6 +219,7 @@ async def admin_page(request: Request, month: str = "", status: str = "", _=Depe
         r["who"] = db.contact_text(r)
         r["gifts_text"] = " + ".join(db.gifts_of(r))
         r["auto"] = r["status"] == "verified" and r.get("source") == "auto"
+        r["shipping"] = db.shipping_view(r)
     months = sorted(set(db.all_months()) | {db.this_month()}, reverse=True)
     stat = {
         "total": len(rows),
@@ -227,7 +228,7 @@ async def admin_page(request: Request, month: str = "", status: str = "", _=Depe
         "no_addr": sum(r["status"] == "verified" and not r["address"] for r in rows),
     }
     return _page(request, "admin.html", rows=rows, months=months, month=month, status=status,
-                 stat=stat, status_cn=STATUS_CN, today=date.today().isoformat())
+                 stat=stat, status_cn=STATUS_CN, shipping_views=db.SHIPPING_VIEWS, today=date.today().isoformat())
 
 
 @router.post("/admin/guard/{gid}")
@@ -274,14 +275,16 @@ async def admin_address(qq: str = Form(...), receiver: str = Form(...), phone: s
 
 
 @router.get("/admin/export.csv")
-async def admin_export(month: str = "", _=Depends(admin)):
+async def admin_export(month: str = "", status: str = "", _=Depends(admin)):
     month = month or db.this_month()
-    rows = db.list_guards(month if month != "all" else None, "verified")
+    rows = db.list_guards(month if month != "all" else None, status or "verified")
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["月份", "本期开始", "等级", "应寄礼物", "B站昵称", "B站UID", "QQ/联系方式", "收件人", "手机号",
                 "收货地址", "已发货"])
     for r in rows:
+        if r["status"] != "verified":
+            continue
         w.writerow([r["month"], r["start_date"], r["guard_level"], " + ".join(db.gifts_of(r)), r["bili_name"] or "",
                     r["bili_uid"] or "", db.contact_text(r), r["receiver"] or "", r["phone"] or "",
                     r["address"] or "", "是" if r["shipped"] else "否"])

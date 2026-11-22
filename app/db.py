@@ -340,6 +340,18 @@ def editable_guard(qq):
     return next((r for r in rows if r["month"] in months), None)
 
 
+SHIPPING_VIEWS = {"ready": "待发货", "missing": "待补地址", "shipped": "已发货"}
+
+
+def shipping_view(row):
+    if row["shipped"]:
+        return "shipped"
+    if row["status"] == "verified":
+        complete = all(str(row[k] or "").strip() for k in ("receiver", "phone", "address"))
+        return "ready" if complete else "missing"
+    return ""
+
+
 def list_guards(month=None, status=None):
     sql = """SELECT g.*, COALESCE(g.snap_receiver, a.receiver) AS receiver, COALESCE(g.snap_phone, a.phone) AS phone,
                     COALESCE(g.snap_address, a.address) AS address, a.updated_at AS addr_updated
@@ -347,11 +359,14 @@ def list_guards(month=None, status=None):
     args = []
     if month:
         sql += " AND g.month=?"; args.append(month)
-    if status:
+    if status and status not in SHIPPING_VIEWS:
         sql += " AND g.status=?"; args.append(status)
     sql += " ORDER BY g.start_date DESC, g.id DESC"
     with conn() as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = [dict(r) for r in c.execute(sql, args)]
+    if status in SHIPPING_VIEWS:
+        return [row for row in rows if shipping_view(row) == status]
+    return rows
 
 
 def all_months():

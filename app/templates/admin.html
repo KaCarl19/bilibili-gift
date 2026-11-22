@@ -9,16 +9,17 @@
       <div class="muted">{{ streamer }} · 共 {{ stat.total }} 条 · 已验证 {{ stat.verified }} · 待审核 {{ stat.pending }} · 已验证未填地址 {{ stat.no_addr }}</div>
     </div>
     <form method="get" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
-      <select name="month" style="width:auto">
+      <select name="month" aria-label="发货月份" style="width:auto">
         {% for m in months %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}</option>{% endfor %}
         <option value="all" {% if month == "all" %}selected{% endif %}>全部月份</option>
       </select>
-      <select name="status" style="width:auto">
+      <select name="status" aria-label="记录状态" style="width:auto">
         <option value="">全部状态</option>
-        {% for k, v in status_cn.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}
+        <optgroup label="发货进度">{% for k, v in shipping_views.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}</optgroup>
+        <optgroup label="身份审核">{% for k, v in status_cn.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}</optgroup>
       </select>
       <button class="sec" type="submit">筛选</button>
-      <a class="btn" href="/admin/export.csv?month={{ month }}">导出发货表</a>
+      {% if stat.verified %}<a class="btn" href="/admin/export.csv?month={{ month }}&amp;status={{ status }}" title="导出当前筛选中已验证的记录">导出当前发货表</a>{% endif %}
     </form>
   </div>
 
@@ -33,7 +34,7 @@
         <tr>
           <td style="white-space:nowrap">{{ r.start_date }}</td>
           <td><span class="tag {{ r.status }}">{{ "自动续登" if r.auto else status_cn[r.status] }}</span>
-              {% if r.shipped %}<br><span class="tag">已发货</span>{% endif %}
+              {% if r.shipping %}<br><span class="tag {{ r.shipping }}">{{ shipping_views[r.shipping] }}</span>{% endif %}
               {% if r.note %}<div class="muted" style="min-width:120px;max-width:200px">{{ r.note }}</div>{% endif %}</td>
           <td><span class="lv">{{ r.guard_level or "" }}</span><br><span class="muted">{{ r.gifts_text }}</span></td>
           <td>{{ r.bili_name or "-" }}<br><span class="muted">{{ r.bili_uid or "" }}</span></td>
@@ -67,7 +68,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="10" class="muted" style="text-align:center;padding:24px">这个月还没有记录</td></tr>
+        <tr><td colspan="10" class="muted" style="text-align:center;padding:24px">当前条件下没有记录。{% if status %}<a href="/admin?month={{ month }}">查看该时段的全部状态</a>{% endif %}</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -90,6 +91,11 @@
   table { border-collapse:collapse; width:100%; font-size:14px; }
   th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  thead { background:#f6f8fb; }
+  tbody tr:hover { background:#fafbfe; }
+  .tag.ready { background:#e4f4fc; color:#106081; }
+  .tag.missing { background:#fff1d6; color:#885514; }
+  .tag.shipped { background:#edf0f3; color:#475569; }
   details form { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
   details input, details textarea { padding:6px 8px; font-size:13px; }
 </style>

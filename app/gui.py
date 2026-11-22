@@ -17,7 +17,7 @@ from datetime import date
 from urllib.parse import urlencode
 
 import httpx
-from PySide6.QtCore import QByteArray, QDate, QObject, QProcess, QProcessEnvironment, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QDate, QItemSelectionModel, QObject, QProcess, QProcessEnvironment, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
@@ -52,7 +52,7 @@ def gifts_text(r, sep="+") -> str:
 def gift_counts(rows) -> str:
     """已验证记录里每种礼物要准备几份"""
     from collections import Counter
-    c = Counter(g for r in rows if r["status"] == "verified" for g in db.gifts_of(r))
+    c = Counter(g for r in rows if r["status"] == "verified" and not r["shipped"] for g in db.gifts_of(r))
     return " · ".join(f"{k}礼物 {c[k]} 份" for k in ("总督", "提督", "舰长") if c[k]) or "暂无"
 
 
@@ -537,6 +537,9 @@ class GuardsPage(QWidget):
         self.month.setMinimumWidth(110)
         self.status = QComboBox()
         self.status.addItem("全部状态", "")
+        for k, v in db.SHIPPING_VIEWS.items():
+            self.status.addItem(v, k)
+        self.status.insertSeparator(self.status.count())
         for k, v in STATUS_CN.items():
             self.status.addItem(v, k)
         self.search = QLineEdit()
@@ -549,11 +552,14 @@ class GuardsPage(QWidget):
         bar.addWidget(self.month)
         bar.addWidget(self.status)
         bar.addWidget(self.search, 1)
+        lay.addLayout(bar)
+        bar = QHBoxLayout()
         bar.addWidget(btn("刷新", None, self.reload_all))
         bar.addWidget(btn("＋ 手动添加", None, self.add_guard))
         self.b_req = btn("📝 修改申请", None, win.open_requests, "观众在网页上提交的地址修改申请")
         bar.addWidget(self.b_req)
-        bar.addWidget(btn("导出 Excel 发货表", "primary", self.export))
+        bar.addStretch(1)
+        bar.addWidget(btn("导出当前发货表", "primary", self.export, "导出当前筛选结果中已验证的记录（Excel）"))
         lay.addLayout(bar)
 
         self.table = QTableWidget(0, len(COLS))
@@ -617,13 +623,14 @@ class GuardsPage(QWidget):
                                             "phone", "address"))]
         self.rows = rows
         t = self.table
+        t.clearSelection()
         t.setSortingEnabled(False)
         t.setRowCount(len(rows))
         for i, r in enumerate(rows):
             vals = [r["start_date"], status_text(r), gifts_text(r),
                     r["bili_name"] or "", r["bili_uid"] or "", who(r), r["join_code"] or "", r["receiver"] or "",
                     r["phone"] or "", r["address"] or ("（未填写）" if r["status"] == "verified" else ""),
-                    "已发货" if r["shipped"] else ""]
+                    db.SHIPPING_VIEWS.get(db.shipping_view(r), "—")]
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
                 it.setData(Qt.UserRole, r["id"])
@@ -646,14 +653,15 @@ class GuardsPage(QWidget):
         if selected:
             for i, r in enumerate(rows):
                 if r["id"] in selected:
-                    t.selectRow(i)
+                    t.selectionModel().select(t.model().index(i, 0),
+                                              QItemSelectionModel.Select | QItemSelectionModel.Rows)
         v = sum(r["status"] == "verified" for r in rows)
         p = sum(r["status"] == "pending" for r in rows)
         na = sum(r["status"] == "verified" and not r["address"] for r in rows)
         sh = sum(bool(r["shipped"]) for r in rows)
         au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
         self.summary.setText(f"共 {len(rows)} 条 · 已验证 {v}（自动续登 {au}）· 待审核 {p} · 未填地址 {na} · 已发货 {sh}"
-                             f"\n需准备：{gift_counts(rows)}")
+                             f"\n尚需备货：{gift_counts(rows)}")
         self.summary.setAlignment(Qt.AlignRight)
         self._sel_changed()
 
@@ -670,9 +678,14 @@ class GuardsPage(QWidget):
         return next((r for r in self.rows if r["id"] == ids[0]), None)
 
     def _sel_changed(self):
-        n = len(self.selected_ids())
-        for b in (self.b_ok, self.b_no, self.b_ship, self.b_unship, self.b_del):
+        ids = set(self.selected_ids())
+        n = len(ids)
+        selected = [r for r in self.rows if r["id"] in ids]
+        for b in (self.b_ok, self.b_no, self.b_del):
             b.setEnabled(n > 0)
+        self.b_ship.setEnabled(bool(selected) and all(r["status"] == "verified" and not r["shipped"]
+                                                      for r in selected))
+        self.b_unship.setEnabled(bool(selected) and all(r["shipped"] for r in selected))
         for b in (self.b_addr, self.b_shot):
             b.setEnabled(n == 1)
 
@@ -683,8 +696,8 @@ class GuardsPage(QWidget):
         m.addAction("✔ 通过", self.approve)
         m.addAction("✘ 拒绝", self.reject)
         m.addSeparator()
-        m.addAction("📦 标记已发货", lambda: self.ship(True))
-        m.addAction("取消发货", lambda: self.ship(False))
+        m.addAction("📦 标记已发货", lambda: self.ship(True)).setEnabled(self.b_ship.isEnabled())
+        m.addAction("取消发货", lambda: self.ship(False)).setEnabled(self.b_unship.isEnabled())
         m.addSeparator()
         m.addAction("✏ 编辑地址", self.edit_address)
         m.addAction("🖼 查看截图", self.view_shot)
@@ -757,9 +770,9 @@ class GuardsPage(QWidget):
 
     def export(self):
         month = self.month.currentData() or ""
-        rows = db.list_guards(month or None, "verified")
+        rows = [r for r in self.rows if r["status"] == "verified"]
         if not rows:
-            QMessageBox.information(self, APP_NAME, "当前月份还没有已验证的舰长。")
+            QMessageBox.information(self, APP_NAME, "当前筛选结果中没有已验证的记录。可以调整月份、状态或搜索条件。")
             return
         name = f"舰长发货表_{month or '全部'}.xlsx"
         path, _ = QFileDialog.getSaveFileName(self, "导出发货表",
@@ -773,7 +786,7 @@ class GuardsPage(QWidget):
             QMessageBox.warning(self, APP_NAME, "保存失败：文件可能正在被 Excel 打开，请先关闭再导出。")
             return
         na = sum(not r["address"] for r in rows)
-        msg = f"已导出 {len(rows)} 位已验证舰长。" + (f"\n其中 {na} 人还没填地址。" if na else "")
+        msg = f"已导出 {len(rows)} 条已验证记录。" + (f"\n其中 {na} 条还没填地址。" if na else "")
         if QMessageBox.question(self, APP_NAME, msg + "\n\n现在打开这个表格吗？") == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
@@ -845,12 +858,30 @@ class AddGuardDialog(QDialog):
         lay.addRow("等级", self.level)
         lay.addRow("开通日期", self.day)
         lay.addRow("一次购买", self.months)
+        self.purchase_summary = label("", "hint", True)
+        lay.addRow("礼物安排", self.purchase_summary)
+        self.months.valueChanged.connect(self.preview_purchase)
+        self.level.currentTextChanged.connect(self.preview_purchase)
+        self.day.dateChanged.connect(self.preview_purchase)
+        self.uid.textChanged.connect(self.preview_purchase)
+        self.preview_purchase()
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("添加")
         bb.button(QDialogButtonBox.Cancel).setText("取消")
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addRow(bb)
+
+    def preview_purchase(self):
+        count = self.months.value()
+        bundle = " + ".join(f"{level}礼物" for level in periods.bundle(self.level.currentText()))
+        summary = f"每期寄 {bundle}，本次购买共 {count} 期。"
+        if count > 1:
+            last = self.day.date().addDays(periods.PERIOD_DAYS * (count - 1)).toString("yyyy-MM-dd")
+            summary += f"末期从 {last} 开始。"
+            if not self.uid.text().strip():
+                summary += "填写 B站 UID 后可按舰长名单自动续登。"
+        self.purchase_summary.setText(summary)
 
     def save(self):
         qq = re.sub(r"\D", "", self.qq.text())
@@ -1573,7 +1604,7 @@ class MainWindow(QMainWindow):
         self.guards.b_req.setText(f"📝 修改申请（{rq}）" if rq else "📝 修改申请")
         self.nav.item(1).setText("🚢  舰长管理" + (f"  🔴 {p + rq}" if p + rq else ""))
         self.nav.item(1).setToolTip(f"{p} 人待审核，{rq} 条地址修改申请" if p + rq else "")
-        counts = (len(rows), v, p, na, sum(len(r["address"] or "") for r in rows), rq)
+        counts = (len(rows), v, p, na, sum(len(r["address"] or "") for r in rows), rq, sh)
         if self._last_counts is not None and counts != self._last_counts and self.stack.currentIndex() == 1:
             self.guards.load()                        # 有新数据时自动刷新表格
         if self._last_counts is not None and p > self._last_counts[2]:
