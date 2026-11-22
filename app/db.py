@@ -369,6 +369,15 @@ def list_guards(month=None, status=None):
     return rows
 
 
+def backlog_counts(month):
+    """(month 之前还没发货的已验证记录数, 所有月份的待审核数)：补登的往期记录不在本月，靠这个提醒主播"""
+    with conn() as c:
+        old = c.execute("SELECT COUNT(*) FROM guards WHERE status='verified' AND shipped=0 AND month<?",
+                        (month,)).fetchone()[0]
+        pending = c.execute("SELECT COUNT(*) FROM guards WHERE status='pending'").fetchone()[0]
+    return old, pending
+
+
 def all_months():
     with conn() as c:
         return [r["month"] for r in c.execute("SELECT DISTINCT month FROM guards ORDER BY month DESC")]

@@ -5,6 +5,8 @@
   判断方法：上一期结束后（超过 3 天余量），他还在 B站舰长名单里 → 说明续上了（或者本来就买了多个月）。
   截图里有到期时间、能确定是一次买了多个月的，不用等余量。
   防误判：自动续登后，如果连续两次发现他已经不在名单里（其实没续费），就自动撤销这条记录（已发货的不动）。
+  服务停过：中间漏掉的期一起补登，记入各自原本的月份。已付费期内的（一次买多个月）直接登记；
+  按月续费、确认不了中间有没有断过的，设为「待审核」请主播核实。
 
 升级合并：舰长中途开了提督（名单里的等级变高了）：
   - 这条记录还没发货 → 直接升级成「提督礼物 + 舰长礼物」（合并成一份）；
@@ -17,6 +19,7 @@ from datetime import date, timedelta
 from . import db, periods
 
 _absent: dict[str, int] = {}          # 自动续登后，连续几次刷新没在名单里
+MAX_BACKFILL = 12                     # 服务停机后最多往回补几期
 
 
 def _span_end(r) -> date:
@@ -93,6 +96,27 @@ def run(guards: dict | None, today: date | None = None, auto_continue: bool = Tr
         prepaid = bool(paid and paid > cur)            # 截图显示一次买了多个月，确定还在付费期内
         if not prepaid and (today - cur).days < periods.RENEW_BUFFER_DAYS:
             continue                                   # 刚到期没几天，先等等，防止名单更新延迟造成误判
+                                                       # （漏掉的期也等这几天，和本期一起补，保证最新一条是本期）
+        # ③-1 服务停过、中间漏掉的期：一期一份礼物，补登到各自原本的月份
+        for j in range(max(0, k - MAX_BACKFILL), k):
+            missed = end + timedelta(days=periods.PERIOD_DAYS * j)
+            if db.period_record(missed, uid=uid, statuses=("verified", "pending", "rejected")):
+                continue                               # 已有记录（含主播核实后拒绝的），不再补
+            m = db.free_month(r["qq"], missed.strftime("%Y-%m"))
+            base = dict(bili_uid=uid, bili_name=g.get("name") or r["bili_name"], guard_level=r["guard_level"],
+                        source="auto", contact=r.get("contact"), paid_until=r.get("paid_until"), date_source="auto")
+            if paid and paid > missed:                 # 一次买了多个月，这期确定付过钱
+                db.upsert_guard(r["qq"], m, missed.isoformat(), "verified", **base,
+                                note=f"补登：{missed} 开始的这一期在服务停止期间开始，当时没能自动登记"
+                                     "（一次买了多个月，仍在付费期内）")
+                logs.append(f"补登：{g.get('name') or uid}（UID {uid}）服务停止期间漏掉的一期（{missed} 开始），"
+                            f"已记入 {m} 发货表")
+            else:                                      # 按月续费的：名单只能说明他现在在舰，中间断没断过不知道
+                db.upsert_guard(r["qq"], m, missed.isoformat(), "pending", **base,
+                                note=f"补登待核实：{missed} 开始的这一期在服务停止期间开始，当时没能自动登记。"
+                                     "他现在仍在舰长名单，但无法确认这期间是否一直在舰，请核实后通过或拒绝")
+                logs.append(f"补登待核实：{g.get('name') or uid}（UID {uid}）服务停止期间漏掉的一期（{missed} 开始），"
+                            f"已记入 {m} 发货表，状态为待审核，请核实后通过或拒绝")
         if db.period_record(cur, uid=uid, statuses=("verified", "pending")):
             continue
         month = db.free_month(r["qq"], this_month)

@@ -1596,19 +1596,23 @@ class MainWindow(QMainWindow):
         sh = sum(r["status"] == "verified" and bool(r["shipped"]) for r in rows)
         self.dash.c_month.title.setText(f"📦 本月舰长（{db.this_month()}）")
         au = sum(r["status"] == "verified" and r.get("source") == "auto" for r in rows)
+        old, p_all = db.backlog_counts(db.this_month())   # 往期没发货的（含服务停机后补登的）、所有月份的待审核
         self.dash.c_month.set(f"已验证 {v} 人", f"其中自动续登 {au} · 待审核 {p} · 未填地址 {na} · 已发货 {sh}\n"
-                                             f"需准备：{gift_counts(rows)}")
+                                             f"需准备：{gift_counts(rows)}"
+                                             + (f"\n⚠ 往期还有 {old} 条未发货" if old else ""))
+        self.dash.c_month.setToolTip("往期未发货的记录：在「舰长管理」选「全部月份」和「待发货」查看" if old else "")
         rq = db.count_pending_requests()
         self.dash.c_req.set(f"{rq} 条待确认" if rq else "暂无", "观众换了手机修改地址时，需要你确认后才生效",
                             "#c27c00" if rq else "#9499a0")
         self.guards.b_req.setText(f"📝 修改申请（{rq}）" if rq else "📝 修改申请")
-        self.nav.item(1).setText("🚢  舰长管理" + (f"  🔴 {p + rq}" if p + rq else ""))
-        self.nav.item(1).setToolTip(f"{p} 人待审核，{rq} 条地址修改申请" if p + rq else "")
-        counts = (len(rows), v, p, na, sum(len(r["address"] or "") for r in rows), rq, sh)
+        self.nav.item(1).setText("🚢  舰长管理" + (f"  🔴 {p_all + rq}" if p_all + rq else ""))
+        tip = f"{p_all} 条待审核" + (f"（其中 {p_all - p} 条在往期月份，选「全部月份」查看）" if p_all > p else "")
+        self.nav.item(1).setToolTip(f"{tip}，{rq} 条地址修改申请" if p_all + rq else "")
+        counts = (len(rows), v, p_all, na, sum(len(r["address"] or "") for r in rows), rq, sh, p, old)
         if self._last_counts is not None and counts != self._last_counts and self.stack.currentIndex() == 1:
             self.guards.load()                        # 有新数据时自动刷新表格
-        if self._last_counts is not None and p > self._last_counts[2]:
-            self.toast(f"🔔 有新的待审核舰长（{p} 人待审核）")
+        if self._last_counts is not None and p_all > self._last_counts[2]:
+            self.toast(f"🔔 有新的待审核舰长（{p_all} 条待审核）")
             QApplication.alert(self)
         elif self._last_counts is not None and rq > self._last_counts[5]:
             self.toast(f"🔔 有新的地址修改申请（{rq} 条待确认）")
