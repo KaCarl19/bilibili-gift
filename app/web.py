@@ -187,25 +187,35 @@ async def fill_page(request: Request, t: str = ""):
     if draft:
         addr.update(draft)
     gifts = " + ".join(f"{x}礼物" for x in db.gifts_of(g))
-    resp = _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft), gifts=gifts)
+    resp = _page(request, "fill.html", t=t, guard=g, addr=addr, errors=[], draft=bool(draft), gifts=gifts,
+                 group=g.get("group_choice") or "", rejoin_ok=db.rejoin_allowed(g))
     return _remember(resp, t)
 
 
 @router.post("/fill")
 async def fill_submit(request: Request, t: str = Form(""), receiver: str = Form(""),
-                      phone: str = Form(""), address: str = Form("")):
+                      phone: str = Form(""), address: str = Form(""), group: str = Form("")):
     qq, g, err = _check_token(t)          # 提交时再查一次，防止链接留到下个月再改
     if err:
         return _page(request, "message.html", title="无法提交", msg=err)
     receiver, phone, address = receiver.strip(), re.sub(r"\D", "", phone), address.strip()
     errors = _check_addr(receiver, phone, address)
+    if group not in db.GROUP_CHOICES:
+        errors.append("请选择是否进舰长群")
+    elif group == "rejoin" and not db.rejoin_allowed(g):
+        errors.append(f"退过舰长群的，需要重新上提督或总督才能再进群。你本期是{g.get('guard_level') or '舰长'}，"
+                      "可以先选「不进群」保存地址。")
     if errors:
-        return _page(request, "fill.html", t=t, guard=g, errors=errors,
+        return _page(request, "fill.html", t=t, guard=g, errors=errors, group=group, rejoin_ok=db.rejoin_allowed(g),
                      gifts=" + ".join(f"{x}礼物" for x in db.gifts_of(g)),
                      addr={"receiver": receiver, "phone": phone, "address": address})
     first = db.get_address(qq) is None
     db.save_address(qq, receiver, phone, address)
-    return _page(request, "message.html", title="提交成功", ok=True, home=True, join_code=g.get("join_code"),
+    g = db.set_group_choice(g["id"], group)
+    group_note = {"in": "你已经在舰长群里了，不用再进群。",
+                  "no": "以后想进舰长群的话，用这台手机重新打开本页，改选「要进舰长群」就能拿到入群口令。"}.get(group, "")
+    return _page(request, "message.html", title="提交成功", ok=True, home=True,
+                 join_code=g.get("join_code") if group in ("join", "rejoin") else None, group_note=group_note,
                  msg=("地址已保存，礼物会寄到这里，感谢上舰！" if first else "地址已更新！")
                  + " 之后需要修改的话，用这台手机重新打开登记页面即可。")
 
@@ -220,6 +230,7 @@ async def admin_page(request: Request, month: str = "", status: str = "", _=Depe
         r["gifts_text"] = " + ".join(db.gifts_of(r))
         r["auto"] = r["status"] == "verified" and r.get("source") == "auto"
         r["shipping"] = db.shipping_view(r)
+        r["group"] = db.group_text(r)
     months = sorted(set(db.all_months()) | {db.this_month()}, reverse=True)
     stat = {
         "total": len(rows),

@@ -120,8 +120,9 @@ def init():
         # paid_until 已付费到哪天（一次买多个月时）/ date_source 本期开始日的来源（screenshot/claimed/manual/auto）
         # gifts 这条要寄的礼物（逗号分隔，如“提督,舰长”）/ paused_days 升级时顺延的天数（接上的舰长时间不另算）
         # snap_* 这一份寄到的收件信息（发货时记下 / 旧表格导入）
+        # group_choice 舰长群：join 要进群 / in 已在群里 / no 不进群 / rejoin 退过群想重新进
         for col in ("contact", "join_code", "paid_until", "date_source", "gifts", "paused_days",
-                    "snap_receiver", "snap_phone", "snap_address"):
+                    "snap_receiver", "snap_phone", "snap_address", "group_choice"):
             if col not in cols:
                 c.execute(f"ALTER TABLE guards ADD COLUMN {col} {'INTEGER DEFAULT 0' if col == 'paused_days' else 'TEXT'}")
 
@@ -129,15 +130,66 @@ def init():
 _CODE_CHARS = "".join(ch for ch in string.ascii_uppercase + string.digits if ch not in "0O1IL")
 
 
-def _ensure_join_code(c, gid):
-    """已验证的记录生成一个入群口令（加舰长群时填写，方便主播核对）"""
-    r = c.execute("SELECT status, join_code FROM guards WHERE id=?", (gid,)).fetchone()
-    if r and r["status"] == "verified" and not r["join_code"]:
-        while True:
-            code = "".join(secrets.choice(_CODE_CHARS) for _ in range(6))
-            if not c.execute("SELECT 1 FROM guards WHERE join_code=?", (code,)).fetchone():
-                break
-        c.execute("UPDATE guards SET join_code=? WHERE id=?", (code, gid))
+# 舰长群只需要进一次：登记时观众自己选。只有选“要进群”的才发入群口令，每人固定一个，续费不变。
+# 退过群的，需要重新上提督或总督才能再进群（本期等级是提督 / 总督才能选“重新进群”）。
+GROUP_CHOICES = {"join": "要进群", "in": "已在群里", "no": "不进群", "rejoin": "退群后重新进"}
+REJOIN_LEVELS = ("提督", "总督")
+
+
+def _same_person(c, r):
+    """同一个人的其他记录（同一身份标识，或同一个 B站 UID），最新的在前"""
+    sql = "SELECT * FROM guards WHERE id<>? AND (qq=?" + (" OR bili_uid=?" if r["bili_uid"] else "") + ") ORDER BY start_date DESC, id DESC"
+    args = [r["id"], r["qq"]] + ([r["bili_uid"]] if r["bili_uid"] else [])
+    return c.execute(sql, args).fetchall()
+
+
+def _new_code(c):
+    while True:
+        code = "".join(secrets.choice(_CODE_CHARS) for _ in range(6))
+        if not c.execute("SELECT 1 FROM guards WHERE join_code=?", (code,)).fetchone():
+            return code
+
+
+def _inherit_group(c, gid):
+    """新记录（续费、自动续登、升级补寄）沿用这个人之前的进群选择和入群口令，不再每个月发新口令"""
+    r = c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone()
+    if not r or (r["group_choice"] and r["join_code"]):
+        return
+    for o in _same_person(c, r):
+        if o["group_choice"] or o["join_code"]:
+            c.execute("UPDATE guards SET group_choice=COALESCE(group_choice, ?), join_code=COALESCE(join_code, ?) WHERE id=?",
+                      (o["group_choice"], o["join_code"], gid))
+            return
+
+
+def rejoin_allowed(r) -> bool:
+    return (r.get("guard_level") or "舰长") in REJOIN_LEVELS
+
+
+def set_group_choice(gid, choice) -> dict:
+    """观众在登记页选了是否进舰长群。要进群 / 重新进群的发口令（这个人已有口令就沿用）。
+    同一个人这一期及以后已经生成的记录一起改。返回更新后的记录。"""
+    if choice not in GROUP_CHOICES:
+        raise ValueError(choice)
+    with conn() as c:
+        r = c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone()
+        code = r["join_code"]
+        if choice in ("join", "rejoin") and not code:
+            code = next((o["join_code"] for o in _same_person(c, r) if o["join_code"]), None) or _new_code(c)
+        ids = [gid] + [o["id"] for o in _same_person(c, r) if o["month"] >= r["month"]]
+        c.executemany("UPDATE guards SET group_choice=?, join_code=COALESCE(?, join_code) WHERE id=?",
+                      [(choice, code, i) for i in ids])
+        return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
+
+
+def group_text(r) -> str:
+    """“舰长群”一栏给人看的文字"""
+    ch, code = r.get("group_choice"), r.get("join_code")
+    if ch in ("join", "rejoin"):
+        return f"{GROUP_CHOICES[ch]} · {code}" if code else GROUP_CHOICES[ch]
+    if ch:
+        return GROUP_CHOICES[ch]
+    return f"口令 {code}" if code else ""
 
 
 # ---------------- 舰长记录 ----------------
@@ -176,7 +228,7 @@ def upsert_guard(qq, month, start_date, status, *, bili_uid=None, bili_name=None
                  screenshot, shot_hash, ocr_text, note, contact, paid_until, date_source,
                  gifts or "舰长", int(paused_days or 0), now()))
         gid = c.execute("SELECT id FROM guards WHERE qq=? AND month=?", (qq, month)).fetchone()["id"]
-        _ensure_join_code(c, gid)
+        _inherit_group(c, gid)
         return dict(c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone())
 
 
@@ -228,7 +280,7 @@ def get_guard(gid):
 def set_guard_status(gid, status, note=None):
     with conn() as c:
         c.execute("UPDATE guards SET status=?, note=COALESCE(?,note) WHERE id=?", (status, note, gid))
-        _ensure_join_code(c, gid)
+        _inherit_group(c, gid)
 
 
 def set_shipped(gid, shipped: bool):

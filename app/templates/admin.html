@@ -38,7 +38,7 @@
               {% if r.note %}<div class="muted" style="min-width:120px;max-width:200px">{{ r.note }}</div>{% endif %}</td>
           <td><span class="lv">{{ r.guard_level or "" }}</span><br><span class="muted">{{ r.gifts_text }}</span></td>
           <td>{{ r.bili_name or "-" }}<br><span class="muted">{{ r.bili_uid or "" }}</span></td>
-          <td>{{ r.who }}{% if r.join_code %}<br><span class="muted">入群口令 {{ r.join_code }}</span>{% endif %}</td>
+          <td>{{ r.who }}{% if r.group %}<br><span class="muted">舰长群：{{ r.group }}</span>{% endif %}</td>
           <td>{{ r.receiver or "" }}</td>
           <td>{{ r.phone or "" }}</td>
           <td style="min-width:200px">{{ r.address or "" }}

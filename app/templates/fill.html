@@ -10,7 +10,7 @@
       <br><span class="muted">本期舰长从 {{ guard.start_date }} 开始{% if guard.paid_until %}，已付费到 {{ guard.paid_until }}{% endif %}</span>
       {% if gifts %}<br><span class="muted">本期礼物：</span><b style="color:var(--pink)">{{ gifts }}</b>{% endif %}
     </p>
-    {% if guard.join_code %}
+    {% if guard.join_code and guard.group_choice in ("join", "rejoin") %}
     <p class="help">入群口令：<b style="color:var(--pink);letter-spacing:2px">{{ guard.join_code }}</b>（加入舰长群时，验证答案填这个）</p>
     {% endif %}
   </div>
@@ -25,6 +25,16 @@
     <input id="phone" name="phone" inputmode="numeric" maxlength="13" required value="{{ addr.phone or '' }}">
     <label for="address">收货地址</label>
     <textarea id="address" name="address" maxlength="200" required placeholder="省 / 市 / 区 + 街道门牌号">{{ addr.address or '' }}</textarea>
+
+    <fieldset class="group">
+      <legend>舰长群</legend>
+      <p class="help" style="margin:0 0 4px">舰长群只需要进一次，续费不用再进。选「要进舰长群」的，保存后会拿到入群口令。</p>
+      <label class="check"><input type="radio" name="group" value="join" required {% if group == "join" %}checked{% endif %}> 要进舰长群（第一次进）</label>
+      <label class="check"><input type="radio" name="group" value="in" {% if group == "in" %}checked{% endif %}> 已经在群里了</label>
+      <label class="check"><input type="radio" name="group" value="no" {% if group == "no" %}checked{% endif %}> 不进群</label>
+      <label class="check{% if not rejoin_ok %} off{% endif %}"><input type="radio" name="group" value="rejoin" {% if not rejoin_ok %}disabled{% endif %} {% if group == "rejoin" %}checked{% endif %}> 以前退过群，想重新进</label>
+      <p class="help" style="margin:2px 0 0 26px">退过群的，需要重新上<b>提督</b>或<b>总督</b>才能再进群{% if not rejoin_ok %}（你本期是{{ guard.guard_level or "舰长" }}，暂时不能选）{% endif %}。</p>
+    </fieldset>
     <button class="full" type="submit">保存</button>
     <p class="muted" style="margin-bottom:0">信息仅用于寄送舰长礼物，只有主播可见。</p>
   </form>

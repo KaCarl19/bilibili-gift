@@ -513,7 +513,7 @@ class DashboardPage(QWidget):
 
 
 # ============================== 页面：舰长管理 ==============================
-COLS = ["本期开始", "状态", "礼物", "B站昵称", "B站UID", "QQ/联系方式", "入群口令", "收件人", "手机号", "收货地址", "发货"]
+COLS = ["本期开始", "状态", "礼物", "B站昵称", "B站UID", "QQ/联系方式", "舰长群", "收件人", "手机号", "收货地址", "发货"]
 
 
 class GuardsPage(QWidget):
@@ -572,7 +572,8 @@ class GuardsPage(QWidget):
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(9, QHeaderView.Stretch)
-        self.table.horizontalHeaderItem(6).setToolTip("观众登记成功后看到的口令。加舰长群时让他填这个，你在这里搜索就能核对")
+        self.table.horizontalHeaderItem(6).setToolTip("观众登记时选的是否进舰长群。选「要进群」的会拿到入群口令（每人一个，续费不变），"
+                                                     "加群时让他填这个，你在这里搜索就能核对。退过群的要上提督或总督才能选「退群后重新进」")
         self.table.doubleClicked.connect(lambda _i: self.edit_address())
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.menu)
@@ -628,7 +629,7 @@ class GuardsPage(QWidget):
         t.setRowCount(len(rows))
         for i, r in enumerate(rows):
             vals = [r["start_date"], status_text(r), gifts_text(r),
-                    r["bili_name"] or "", r["bili_uid"] or "", who(r), r["join_code"] or "", r["receiver"] or "",
+                    r["bili_name"] or "", r["bili_uid"] or "", who(r), db.group_text(r), r["receiver"] or "",
                     r["phone"] or "", r["address"] or ("（未填写）" if r["status"] == "verified" else ""),
                     db.SHIPPING_VIEWS.get(db.shipping_view(r), "—")]
             for j, v in enumerate(vals):
@@ -642,7 +643,8 @@ class GuardsPage(QWidget):
                 if j == 10 and r["shipped"]:
                     it.setForeground(QColor("#1a7f3c"))
                 if j == 6:
-                    it.setForeground(QColor(PINK))
+                    it.setForeground(QColor(PINK if r.get("join_code") and r.get("group_choice") in ("join", "rejoin", None)
+                                            else "#9499a0"))
                 if j == 9:
                     it.setToolTip(str(v))
                 if j in (0, 1, 2):
@@ -1242,8 +1244,9 @@ li{{margin:4px 0}} .box{{background:#fff6e0;padding:10px;border-radius:8px}}</st
 <li>看到「📝 地址修改申请」：观众换了手机修改地址时需要你确认，核对后点「同意」。</li>
 <li>准备寄礼物：「舰长管理」选好月份 →「导出 Excel 发货表」；寄出后选中点「📦 标记已发货」。</li>
 <li>观众私信你新地址：在「舰长管理」双击他那一行，直接帮他改。</li>
-<li>管理舰长群：可以把 QQ 群设成「需要回答问题」，让观众填写登记成功后看到的<b>入群口令</b>，
-  你在「舰长管理」搜索这个口令就能核对是不是在舰的舰长。</li>
+<li>管理舰长群：观众登记时会选<b>是否进舰长群</b>（要进群 / 已在群里 / 不进群 / 退群后重新进）。选「要进群」的会拿到<b>入群口令</b>，
+  每人一个、续费不变。可以把 QQ 群设成「需要回答问题」让他填这个口令，你在「舰长管理」搜索口令就能核对。
+  退过群的，要重新上提督或总督才能选「退群后重新进」。</li>
 <li><b>自动续费 / 一次买多个月：</b>每个舰长月寄一份礼物。上一期结束后他还在 B站舰长名单里，软件会自动生成下个月的记录
   （状态显示「自动续登」，沿用原来的地址）。如果之后发现他其实没续费，这条记录会自动撤销。</li>
 </ul>
