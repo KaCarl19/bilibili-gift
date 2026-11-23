@@ -37,12 +37,18 @@ def main():
         "--add-data", f"{ROOT / 'app' / 'templates'}{sep}app/templates",
         # NoneBot 加载插件时要读取插件的 .py 源文件，必须原样带上
         "--add-data", f"{ROOT / 'app' / 'plugins' / 'guard_bot.py'}{sep}app/plugins",
+        "--add-data", f"{ROOT / 'app' / 'plugins' / 'qq_official.py'}{sep}app/plugins",
         "--collect-data", "rapidocr",
         "--collect-submodules", "uvicorn",
         "--collect-submodules", "websockets",
         "--collect-submodules", "nonebot",
         "--hidden-import", "app.plugins.guard_bot",
         "--hidden-import", "nonebot.adapters.onebot.v11",
+        "--hidden-import", "app.plugins.qq_official",
+        "--hidden-import", "app.joincode",
+        "--hidden-import", "nonebot.adapters.qq",
+        "--hidden-import", "nonebot.drivers.httpx",
+        "--hidden-import", "nonebot.drivers.websockets",
         "--copy-metadata", "nonebot2",
         "--exclude-module", "tkinter",
     ]

@@ -22,7 +22,9 @@ SHOT_DIR.mkdir(exist_ok=True)
 DEFAULTS = {
     "streamer": {"name": "", "room_id": 0, "keywords": []},
     "bilibili": {"check_api": True},
-    "qq": {"enabled": False, "groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
+    # mode：official = QQ 官方机器人（QQ 开放平台）；onebot = LLBot / NapCat 等非官方协议端
+    "qq": {"enabled": False, "mode": "official", "appid": "", "secret": "", "member_events": False,
+           "groups": [], "admins": [], "kick_unverified_minutes": 0, "access_token": ""},
     "web": {"port": 8765, "public_url": "http://127.0.0.1:8765", "admin_password": "",
             "link_valid_hours": 24,
             "contact_label": "QQ / 微信", "contact_required": False, "contact_hint": "方便主播有问题时联系你"},
@@ -44,6 +46,9 @@ def load() -> dict:
     if CONFIG_FILE.exists():
         raw = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
     c = _merge(DEFAULTS, raw)
+    q_raw = raw.get("qq") or {}
+    if "mode" not in q_raw and q_raw.get("enabled"):   # 旧版本已经在用 LLBot / NapCat 的，保持原样
+        c["qq"]["mode"] = "onebot"
     if not c["web"]["admin_password"]:                 # 首次运行自动生成后台密码
         c["web"]["admin_password"] = secrets.token_urlsafe(9)
         save(c)
@@ -71,7 +76,13 @@ bilibili:
   check_api: {_j(b["check_api"])}            # 调用 B站 公开接口核对舰长名单（推荐开启）
 
 qq:
-  enabled: {_j(q["enabled"])}            # 是否启用 QQ 机器人（需要 LLBot / NapCat 等协议端）
+  enabled: {_j(q["enabled"])}            # 是否启用 QQ 机器人
+  mode: {_j(q["mode"])}            # official = QQ 官方机器人（推荐）；onebot = LLBot / NapCat 等非官方协议端
+  # ---- QQ 官方机器人（QQ 开放平台 q.qq.com → 你的机器人 → 开发设置）----
+  appid: {_j(q["appid"])}                 # AppID
+  secret: {_j(q["secret"])}                # AppSecret（不要告诉别人）
+  member_events: {_j(q["member_events"])}          # 自动审核入群申请、记录退群（需开放平台开通「群成员事件」权限）
+  # ---- LLBot / NapCat ----
   groups: {_j(q["groups"])}              # 舰长群群号
   admins: {_j(q["admins"])}              # 主播/管理员 QQ（接收待审核提醒）
   kick_unverified_minutes: {_j(q["kick_unverified_minutes"])}   # 新人多少分钟内不验证就踢出，0 = 不踢

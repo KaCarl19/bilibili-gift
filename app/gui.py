@@ -975,10 +975,44 @@ class SettingsPage(QWidget):
         # --- QQ ---
         g2 = QGroupBox("② QQ 机器人（可选）")
         f2 = QFormLayout(g2)
-        self.qq_on = QCheckBox("启用 QQ 机器人（群里自动识别上舰截图、私聊改地址、审核结果通知）")
+        self.qq_on = QCheckBox("启用 QQ 机器人")
         f2.addRow("", self.qq_on)
-        f2.addRow("", label("收集地址不需要 QQ 机器人：观众打开「登记网页」就能自助验证和填写。"
-                            "启用需要另外运行 LLBot 等 QQ 协议端（NapCat 已停止维护），"
+        f2.addRow("", label("收集地址不需要 QQ 机器人：观众打开「登记网页」就能自助验证和填写。", "hint", True))
+        self.qq_mode = QComboBox()
+        self.qq_mode.addItem("QQ 官方机器人（推荐，不会封号）", "official")
+        self.qq_mode.addItem("LLBot / NapCat（非官方，有封号风险）", "onebot")
+        f2.addRow("机器人类型", self.qq_mode)
+        # 官方机器人
+        self.box_official = QWidget()
+        fo = QFormLayout(self.box_official)
+        fo.setContentsMargins(0, 0, 0, 0)
+        fo.addRow("", label("在舰长群里核对入群口令：新人发「@机器人 口令 XXXXXX」，机器人回复他是不是在舰的已验证舰长。"
+                            "到 q.qq.com 注册（个人认证即可）→ 创建机器人 →「开发设置」里复制 AppID 和 AppSecret，"
+                            "再把机器人拉进你当群主的舰长群。详细步骤见「使用帮助」。", "hint", True))
+        self.appid = QLineEdit()
+        self.appid.setPlaceholderText("开发设置里的 AppID（一串数字）")
+        fo.addRow("AppID", self.appid)
+        sr = QHBoxLayout()
+        self.secret = QLineEdit()
+        self.secret.setEchoMode(QLineEdit.Password)
+        self.secret.setPlaceholderText("开发设置里的 AppSecret，不要告诉别人")
+        sr.addWidget(self.secret, 1)
+        show_s = QCheckBox("显示")
+        show_s.toggled.connect(lambda on: self.secret.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+        sr.addWidget(show_s)
+        fo.addRow("AppSecret", sr)
+        self.member_events = QCheckBox("自动审核入群申请、记录退群")
+        fo.addRow("", self.member_events)
+        fo.addRow("", label("入群申请的答案是有效口令就自动通过，否则拒绝并说明原因；有人退群会记下来，以后要重新上提督或总督才能再进。"
+                            "需要先在开放平台开通「群成员事件」相关权限，没开通请不要勾，否则机器人连不上。", "hint", True))
+        f2.addRow(self.box_official)
+        # LLBot / NapCat
+        self.box_onebot = QWidget()
+        fb = QFormLayout(self.box_onebot)
+        fb.setContentsMargins(0, 0, 0, 0)
+        f2 = fb
+        f2.addRow("", label("群里自动识别上舰截图、私聊改地址、审核结果通知、新人超时踢出。"
+                            "需要另外运行 LLBot 等 QQ 协议端（NapCat 已停止维护），"
                             "这类非官方工具有被 QQ 风控的风险，请务必用小号。", "hint", True))
         self.groups = QLineEdit()
         self.groups.setPlaceholderText("多个群用逗号分隔")
@@ -1002,7 +1036,9 @@ class SettingsPage(QWidget):
         self.b_browse = btn("浏览…", None, self.browse_napcat)
         nr.addWidget(self.b_browse)
         f2.addRow("协议端位置", nr)
+        g2.layout().addRow(self.box_onebot)
         self.qq_on.toggled.connect(self._qq_toggle)
+        self.qq_mode.currentIndexChanged.connect(lambda _i: self._qq_toggle(self.qq_on.isChecked()))
         lay.addWidget(g2)
 
         # --- 网页 ---
@@ -1080,6 +1116,10 @@ class SettingsPage(QWidget):
         self.token.setText(q["access_token"] or "")
         self.napcat.setText(c["napcat"]["path"] or "")
         self.qq_on.setChecked(bool(q.get("enabled")))
+        self.qq_mode.setCurrentIndex(max(0, self.qq_mode.findData(q.get("mode") or "official")))
+        self.appid.setText(str(q.get("appid") or ""))
+        self.secret.setText(str(q.get("secret") or ""))
+        self.member_events.setChecked(bool(q.get("member_events")))
         self._qq_toggle(self.qq_on.isChecked())
         self._last_port = int(w["port"])
         self.port.blockSignals(True)
@@ -1103,7 +1143,12 @@ class SettingsPage(QWidget):
         self._last_port = v
 
     def _qq_toggle(self, on):
-        for w in (self.groups, self.admins, self.kick, self.token, self.napcat, self.b_browse):
+        official = self.qq_mode.currentData() == "official"
+        self.qq_mode.setEnabled(on)
+        self.box_official.setVisible(official)
+        self.box_onebot.setVisible(not official)
+        for w in (self.appid, self.secret, self.member_events, self.groups, self.admins, self.kick, self.token,
+                  self.napcat, self.b_browse):
             w.setEnabled(on)
 
     def browse_napcat(self):
@@ -1163,6 +1208,10 @@ class SettingsPage(QWidget):
         c["rules"]["edit_grace_days"] = self.grace.value()
         c["napcat"]["path"] = self.napcat.text().strip()
         c["qq"]["enabled"] = self.qq_on.isChecked()
+        c["qq"].update(mode=self.qq_mode.currentData(), appid=re.sub(r"\s", "", self.appid.text()),
+                       secret=self.secret.text().strip(), member_events=self.member_events.isChecked())
+        if c["qq"]["enabled"] and c["qq"]["mode"] == "official" and not (c["qq"]["appid"] and c["qq"]["secret"]):
+            raise ValueError("启用 QQ 官方机器人需要填写 AppID 和 AppSecret（在 q.qq.com 机器人的「开发设置」里）")
         c["gui"]["autostart"] = self.autostart.isChecked()
         c["rules"]["auto_renew"] = self.auto_renew.isChecked()
         return c
@@ -1257,14 +1306,27 @@ li{{margin:4px 0}} .box{{background:#fff6e0;padding:10px;border-radius:8px}}</st
 <li><b>云服务器（长期推荐）：</b>把整个软件文件夹放到 Windows 云服务器上运行，开放 <code>{port}</code> 端口，
   「观众访问地址」填 <code>http://服务器IP:{port}</code>。</li>
 </ul>
-<h3>QQ 机器人（可选）</h3>
-<p>不用 QQ 机器人也能收集地址。如果想让机器人在群里自动识别截图、私聊处理改地址、通知审核结果：</p>
+<h3>QQ 官方机器人（可选，推荐）</h3>
+<p>不用 QQ 机器人也能收集地址。官方机器人在舰长群里帮你<b>核对入群口令</b>，不会封号：</p>
+<ol>
+<li>打开 <a href="https://q.qq.com/">q.qq.com</a>（QQ 开放平台），用你自己的 QQ 注册，个人实名认证即可，然后「创建机器人」。</li>
+<li>机器人的「开发设置」里复制 <b>AppID</b> 和 <b>AppSecret</b>；同一页的 <b>IP 白名单</b>加上这台电脑（或云服务器）的公网 IP。</li>
+<li>把机器人拉进你当群主的舰长群（个人认证的机器人只能进你当群主或管理员的群）。</li>
+<li>「⚙ 设置」→「QQ 机器人」勾选启用，类型选「QQ 官方机器人」，填 AppID 和 AppSecret，保存并重启服务。「💬 QQ 机器人」显示 <b>已连接</b> 即可。</li>
+<li>群里试一下：发「<b>@机器人 口令 你的入群口令</b>」。核对通过会记为「已进群」，「舰长管理」的「舰长群」一栏能看到。</li>
+<li>可选：在开放平台开通「群成员事件」相关权限后，到设置里勾「自动审核入群申请、记录退群」。
+  QQ 群的加群方式设成「需要回答问题」，答案填入群口令：口令有效自动通过，无效自动拒绝并说明原因；
+  有人退群会记为「已退群」，以后要重新上提督或总督、在登记页选「以前退过群，想重新进」才能再进。</li>
+</ol>
+<p>官方机器人拿不到 QQ 号，也不能随便私聊观众，所以地址还是在登记网页收。</p>
+<h3>LLBot / NapCat（可选，非官方）</h3>
+<p>想让机器人在群里自动识别截图、私聊处理改地址、通知审核结果、新人超时踢出，可以改用非官方协议端：</p>
 <ol>
 <li>NapCat 已停止维护，推荐使用 <a href="https://luckylilliadoc.pages.dev/">LLBot</a>（接入方式和 NapCat 一样，都支持 OneBot 11），
   用 <b>QQ 小号</b>登录。⚠️ 这类非官方工具有被 QQ 风控、封号的风险。</li>
 <li>在协议端里开启 OneBot 11 的<b>反向 WebSocket</b>，地址填 <code>{ws}</code>，
   {"Token 填 <code>" + html.escape(tok) + "</code>" if tok else "Token 留空"}。</li>
-<li>「⚙ 设置」勾选「启用 QQ 机器人」，填舰长群号和你的 QQ，保存并重启服务。「💬 QQ 机器人」显示 <b>已连接</b> 即可。</li>
+<li>「⚙ 设置」勾选「启用 QQ 机器人」，类型选「LLBot / NapCat」，填舰长群号和你的 QQ，保存并重启服务。「💬 QQ 机器人」显示 <b>已连接</b> 即可。</li>
 </ol>
 <h3>数据与隐私</h3>
 <p>所有数据都在软件目录下的 <code>data</code> 文件夹（「运行状态」页可一键打开）。请定期备份，
@@ -1552,14 +1614,21 @@ class MainWindow(QMainWindow):
     def _qq_card(self, data):
         d = self.dash
         on = bool(self.cfg["qq"]["enabled"])
-        d.b_qq_launch.setVisible(on)
-        d.b_qq_copy.setVisible(on)
-        d.b_qq_set.setVisible(not on)
+        official = self.cfg["qq"].get("mode", "official") == "official"
+        d.b_qq_launch.setVisible(on and not official)
+        d.b_qq_copy.setVisible(on and not official)
+        d.b_qq_set.setVisible(not on or official)
         if not on:
-            d.c_qq.set("未启用", "收集地址不需要 QQ 机器人。想在群里自动识别截图，可在设置里启用（需要 LLBot 等协议端）",
+            d.c_qq.set("未启用", "收集地址不需要 QQ 机器人。想在舰长群里核对入群口令，可在设置里启用 QQ 官方机器人",
                        "#9499a0")
         elif data is None:
             d.c_qq.set("—", "服务启动后显示")
+        elif official and data.get("bots"):
+            d.c_qq.set("● 已连接", "QQ 官方机器人 · 群里「@机器人 口令 XXXXXX」核对入群口令"
+                       + (" · 自动审核入群申请" if self.cfg["qq"].get("member_events") else ""), "#1a7f3c")
+        elif official:
+            d.c_qq.set("○ 未连接", "正在连接 QQ 开放平台。一直连不上的话：检查 AppID / AppSecret，"
+                       "以及开放平台「开发设置」的 IP 白名单（见运行日志）", "#c27c00")
         elif data.get("bots"):
             d.c_qq.set("● 已连接", f"机器人 QQ：{', '.join(data['bots'])}", "#1a7f3c")
         else:
@@ -1666,6 +1735,9 @@ class MainWindow(QMainWindow):
         if not self.cfg["qq"]["enabled"]:
             self.dash.append_log(f"[界面] 未启用 QQ 机器人，没有通知 QQ {qq}")
             return
+        if self.cfg["qq"].get("mode", "official") == "official":
+            self.dash.append_log(f"[界面] QQ 官方机器人不能按 QQ 号私聊，没有通知 QQ {qq}（可以手动告诉对方）")
+            return
         if not self.bot.running() or not (self.status_info.get("bots")):
             self.dash.append_log(f"[界面] QQ 未连接，没能通知 {qq}（数据已保存，可以之后手动告诉对方）")
             return
@@ -1681,7 +1753,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_NAME, "本月已验证的舰长都填好地址啦 🎉")
             return
         qq_rows = [r for r in rows if db.is_qq(r["qq"])]
-        if not self.cfg["qq"]["enabled"] or not qq_rows:
+        if not self.cfg["qq"]["enabled"] or self.cfg["qq"].get("mode", "official") == "official" or not qq_rows:
             QGuiApplication.clipboard().setText(self.help.notice())
             QMessageBox.information(self, APP_NAME, f"本月还有 {len(rows)} 位舰长没填地址。\n\n"
                                     "没有启用 QQ 机器人（或他们是网页登记的），没法私聊提醒。"

@@ -63,6 +63,14 @@ CREATE TABLE IF NOT EXISTS address_requests (   -- 网页上的地址修改申�
     status      TEXT NOT NULL DEFAULT 'pending',   -- pending / approved / rejected
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS group_joins (  -- QQ 官方机器人：哪个入群口令被哪位群成员用过（openid，拿不到 QQ 号）
+    join_code     TEXT PRIMARY KEY,
+    member_openid TEXT NOT NULL,
+    group_openid  TEXT,
+    joined_at     TEXT NOT NULL,
+    left_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_group_joins_member ON group_joins(member_openid);
 CREATE TABLE IF NOT EXISTS joins (      -- 进群待验证记录
     qq          TEXT NOT NULL,
     group_id    TEXT NOT NULL,
@@ -133,6 +141,8 @@ _CODE_CHARS = "".join(ch for ch in string.ascii_uppercase + string.digits if ch 
 # 舰长群只需要进一次：登记时观众自己选。只有选“要进群”的才发入群口令，每人固定一个，续费不变。
 # 退过群的，需要重新上提督或总督才能再进群（本期等级是提督 / 总督才能选“重新进群”）。
 GROUP_CHOICES = {"join": "要进群", "in": "已在群里", "no": "不进群", "rejoin": "退群后重新进"}
+# 下面两个由 QQ 官方机器人自动记录，观众在登记页选不到
+BOT_GROUP_STATES = {"joined": "已进群", "left": "已退群"}
 REJOIN_LEVELS = ("提督", "总督")
 
 
@@ -169,7 +179,7 @@ def rejoin_allowed(r) -> bool:
 def set_group_choice(gid, choice) -> dict:
     """观众在登记页选了是否进舰长群。要进群 / 重新进群的发口令（这个人已有口令就沿用）。
     同一个人这一期及以后已经生成的记录一起改。返回更新后的记录。"""
-    if choice not in GROUP_CHOICES:
+    if choice not in GROUP_CHOICES and choice not in BOT_GROUP_STATES:
         raise ValueError(choice)
     with conn() as c:
         r = c.execute("SELECT * FROM guards WHERE id=?", (gid,)).fetchone()
@@ -185,6 +195,8 @@ def set_group_choice(gid, choice) -> dict:
 def group_text(r) -> str:
     """“舰长群”一栏给人看的文字"""
     ch, code = r.get("group_choice"), r.get("join_code")
+    if ch in BOT_GROUP_STATES:
+        return f"{BOT_GROUP_STATES[ch]} · {code}" if code else BOT_GROUP_STATES[ch]
     if ch in ("join", "rejoin"):
         return f"{GROUP_CHOICES[ch]} · {code}" if code else GROUP_CHOICES[ch]
     if ch:
